@@ -30,8 +30,11 @@ export interface AuthTokens {
 
 export class AuthService {
   public static async register(data: RegisterDTO): Promise<AuthTokens> {
+    const normalizedEmail = data.email.toLowerCase().trim();
+    const normalizedName = data.name.trim();
+
     const db = getDatabase();
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(data.email.toLowerCase().trim());
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
     if (existing) {
       throw new Error('Email already registered');
     }
@@ -48,32 +51,34 @@ export class AuthService {
 
     insert.run(
       id,
-      data.email.toLowerCase().trim(),
+      normalizedEmail,
       passwordHash,
-      data.name.trim(),
-      data.preferredRegion || null,
+      normalizedName,
+      data.preferredRegion?.trim() || null,
       createdAt
     );
 
-    const token = this.generateToken(id, data.email);
+    const token = this.generateToken(id, normalizedEmail);
 
     return {
       token,
       user: {
         id,
-        email: data.email.toLowerCase().trim(),
-        name: data.name.trim(),
-        preferredRegion: data.preferredRegion,
+        email: normalizedEmail,
+        name: normalizedName,
+        preferredRegion: data.preferredRegion?.trim() || undefined,
         createdAt,
       },
     };
   }
 
   public static async login(data: LoginDTO): Promise<AuthTokens> {
+    const normalizedEmail = data.email.toLowerCase().trim();
+
     const db = getDatabase();
     const row = db
       .prepare('SELECT id, email, password_hash, name, preferred_region, created_at FROM users WHERE email = ?')
-      .get(data.email.toLowerCase().trim()) as
+      .get(normalizedEmail) as
       | {
           id: string;
           email: string;
