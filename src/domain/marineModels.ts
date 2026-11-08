@@ -13,6 +13,11 @@ export type DataQualityTier =
   | 'simulated';
 
 /**
+ * Data status designating the temporal and methodological nature of the data
+ */
+export type DataStatus = 'observation' | 'forecast' | 'estimated' | 'simulated';
+
+/**
  * Standard units used across the Smart Fishing domain model
  */
 export interface MarineUnits {
@@ -42,8 +47,11 @@ export const DEFAULT_MARINE_UNITS: MarineUnits = {
  */
 export interface DataProvenance {
   provider: string;
-  retrievedAt: string; // ISO 8601
+  retrievedAt: string; // ISO 8601 timestamp of backend retrieval
   quality: DataQualityTier;
+  status: DataStatus;
+  sourceGeneratedAt?: string; // ISO 8601 timestamp when external model or instrument produced the data
+  forecastHorizonHours?: number; // Duration in hours from generation/retrieval to forecast end
   stationId?: string;
   stationName?: string;
   coordinates: {
@@ -194,6 +202,73 @@ export class MarineProviderTimeoutError extends MarineProviderError {
     this.name = 'MarineProviderTimeoutError';
     Object.setPrototypeOf(this, MarineProviderTimeoutError.prototype);
   }
+}
+
+export class MarineDataValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MarineDataValidationError';
+    Object.setPrototypeOf(this, MarineDataValidationError.prototype);
+  }
+}
+
+/**
+ * Quality tier ranking for combination logic (higher number = lower reliability)
+ */
+const QUALITY_RANKING: Record<DataQualityTier, number> = {
+  observed: 1,
+  astronomical_forecast: 2,
+  numerical_forecast: 3,
+  estimated: 4,
+  simulated: 5,
+};
+
+/**
+ * Combines two quality tiers ensuring the least reliable tier takes precedence (no silent upgrading)
+ */
+export function combineQualityTiers(tierA: DataQualityTier, tierB: DataQualityTier): DataQualityTier {
+  return QUALITY_RANKING[tierA] >= QUALITY_RANKING[tierB] ? tierA : tierB;
+}
+
+/**
+ * Normalizes an angle into the standard 0 to 359 degrees range
+ */
+export function normalizeDegrees(deg: number): number {
+  if (isNaN(deg)) {
+    throw new MarineDataValidationError(`Invalid degree value: ${deg}`);
+  }
+  let normalized = deg % 360;
+  if (normalized < 0) normalized += 360;
+  return Math.round(normalized * 10) / 10;
+}
+
+/**
+ * Checks if coordinates fall within valid terrestrial coordinates
+ */
+export function isValidCoordinate(latitude: number, longitude: number): boolean {
+  return (
+    typeof latitude === 'number' &&
+    typeof longitude === 'number' &&
+    !isNaN(latitude) &&
+    !isNaN(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
+
+/**
+ * Checks if coordinates reside in the general Moroccan maritime coastal region
+ * (Latitude 20.0 to 36.5 N, Longitude -18.0 to -1.0 W)
+ */
+export function isMoroccanCoastalRegion(latitude: number, longitude: number): boolean {
+  return (
+    latitude >= 20.0 &&
+    latitude <= 36.5 &&
+    longitude >= -18.0 &&
+    longitude <= -1.0
+  );
 }
 
 /**

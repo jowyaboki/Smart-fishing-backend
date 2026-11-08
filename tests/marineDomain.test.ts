@@ -7,8 +7,13 @@ import {
   NormalizedTidePrediction,
   MarineProviderError,
   MarineProviderTimeoutError,
+  MarineDataValidationError,
   mapForecastToResponse,
   mapTidesToResponse,
+  combineQualityTiers,
+  normalizeDegrees,
+  isValidCoordinate,
+  isMoroccanCoastalRegion,
 } from '../src/domain/marineModels';
 
 describe('Marine Domain Models & Contracts', () => {
@@ -21,6 +26,45 @@ describe('Marine Domain Models & Contracts', () => {
       'simulated',
     ];
     expect(validTiers.length).toBe(5);
+  });
+
+  it('correctly calculates combination of quality tiers without silent upgrading', () => {
+    // Combination should always take the least reliable (worst) tier
+    expect(combineQualityTiers('observed', 'observed')).toBe('observed');
+    expect(combineQualityTiers('observed', 'numerical_forecast')).toBe('numerical_forecast');
+    expect(combineQualityTiers('numerical_forecast', 'observed')).toBe('numerical_forecast');
+    expect(combineQualityTiers('numerical_forecast', 'simulated')).toBe('simulated');
+    expect(combineQualityTiers('simulated', 'astronomical_forecast')).toBe('simulated');
+    expect(combineQualityTiers('estimated', 'astronomical_forecast')).toBe('estimated');
+  });
+
+  it('normalizes degrees to 0..360 range and handles negatives or values > 360', () => {
+    expect(normalizeDegrees(0)).toBe(0);
+    expect(normalizeDegrees(360)).toBe(0);
+    expect(normalizeDegrees(450)).toBe(90);
+    expect(normalizeDegrees(-90)).toBe(270);
+    expect(normalizeDegrees(315.46)).toBe(315.5);
+    expect(() => normalizeDegrees(NaN)).toThrow(MarineDataValidationError);
+  });
+
+  it('validates geographic coordinates accurately', () => {
+    expect(isValidCoordinate(33.58, -7.61)).toBe(true);
+    expect(isValidCoordinate(90, 180)).toBe(true);
+    expect(isValidCoordinate(-90, -180)).toBe(true);
+    expect(isValidCoordinate(91, 0)).toBe(false);
+    expect(isValidCoordinate(0, 181)).toBe(false);
+    expect(isValidCoordinate(NaN, 0)).toBe(false);
+  });
+
+  it('identifies Moroccan coastal bounding box correctly', () => {
+    // Casablanca: 33.58, -7.61 (Valid Moroccan coastal water)
+    expect(isMoroccanCoastalRegion(33.58, -7.61)).toBe(true);
+    // Agadir: 30.42, -9.60 (Valid)
+    expect(isMoroccanCoastalRegion(30.42, -9.60)).toBe(true);
+    // Dakhla: 23.72, -15.93 (Valid)
+    expect(isMoroccanCoastalRegion(23.72, -15.93)).toBe(true);
+    // Paris: 48.85, 2.35 (Not Moroccan)
+    expect(isMoroccanCoastalRegion(48.85, 2.35)).toBe(false);
   });
 
   it('provides standard immutable marine units', () => {
@@ -72,7 +116,10 @@ describe('Marine Domain Models & Contracts', () => {
       provenance: {
         provider: 'open-meteo',
         retrievedAt: '2026-11-08T05:00:00Z',
+        sourceGeneratedAt: '2026-11-08T04:00:00Z',
+        forecastHorizonHours: 48,
         quality: 'numerical_forecast',
+        status: 'forecast',
         coordinates: { latitude: 33.58, longitude: -7.61 },
         units: { ...DEFAULT_MARINE_UNITS },
         isSimulatedFallback: false,
@@ -85,6 +132,9 @@ describe('Marine Domain Models & Contracts', () => {
     expect(responseDto.hourly.length).toBe(2);
     expect(responseDto.dailySummary.maxWaveHeight).toBe(1.6);
     expect(responseDto.provenance?.quality).toBe('numerical_forecast');
+    expect(responseDto.provenance?.status).toBe('forecast');
+    expect(responseDto.provenance?.sourceGeneratedAt).toBe('2026-11-08T04:00:00Z');
+    expect(responseDto.provenance?.forecastHorizonHours).toBe(48);
     expect(responseDto.provenance?.isSimulatedFallback).toBe(false);
   });
 
@@ -108,6 +158,7 @@ describe('Marine Domain Models & Contracts', () => {
         provider: 'simulated-tide-engine',
         retrievedAt: '2026-11-08T05:00:00Z',
         quality: 'simulated',
+        status: 'simulated',
         coordinates: { latitude: 33.58, longitude: -7.61 },
         units: { ...DEFAULT_MARINE_UNITS },
         isSimulatedFallback: true,
@@ -123,6 +174,7 @@ describe('Marine Domain Models & Contracts', () => {
     expect(responseDto.tideEvents.length).toBe(2);
     expect(responseDto.solunar.rating).toBe(92);
     expect(responseDto.provenance?.isSimulatedFallback).toBe(true);
+    expect(responseDto.provenance?.status).toBe('simulated');
     expect(responseDto.disclaimer).toBeDefined();
   });
 

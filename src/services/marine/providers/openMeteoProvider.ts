@@ -5,7 +5,10 @@ import {
   HourlyMarineCondition,
   MarineProviderError,
   MarineProviderTimeoutError,
+  MarineDataValidationError,
   DEFAULT_MARINE_UNITS,
+  normalizeDegrees,
+  isValidCoordinate,
 } from '../../../domain/marineModels';
 import { MoroccanSpotResolver } from './moroccanSpotResolver';
 
@@ -22,6 +25,12 @@ export class OpenMeteoMarineProvider implements IMarineForecastProvider {
   }
 
   public async getForecast(params: MarineForecastParams): Promise<NormalizedMarineForecast> {
+    if (!isValidCoordinate(params.latitude, params.longitude)) {
+      throw new MarineDataValidationError(
+        `Invalid coordinates: latitude=${params.latitude}, longitude=${params.longitude}`
+      );
+    }
+
     const lat = Math.round(params.latitude * 100) / 100;
     const lon = Math.round(params.longitude * 100) / 100;
     const days = Math.min(7, Math.max(1, params.days || 3));
@@ -32,6 +41,7 @@ export class OpenMeteoMarineProvider implements IMarineForecastProvider {
 
     let marineRes: Response;
     let weatherRes: Response;
+    const retrievalTimestamp = new Date().toISOString();
 
     try {
       [marineRes, weatherRes] = await Promise.all([
@@ -72,20 +82,49 @@ export class OpenMeteoMarineProvider implements IMarineForecastProvider {
       );
     }
 
-    const hourlyData: HourlyMarineCondition[] = [];
     const times: string[] = marineJson?.hourly?.time || [];
-    let maxWave = 0;
-    let minWave = 999;
+    if (!times.length) {
+      throw new MarineProviderError(
+        'Open-Meteo returned empty hourly timeseries',
+        this.providerId
+      );
+    }
+
+    const hourlyData: HourlyMarineCondition[] = [];
+    let maxWave = -Infinity;
+    let minWave = Infinity;
     let windSum = 0;
 
     for (let i = 0; i < times.length; i++) {
-      const waveHeight = marineJson.hourly?.wave_height?.[i] ?? 1.2;
-      const wavePeriod = marineJson.hourly?.wave_period?.[i] ?? 8;
-      const waveDirection = marineJson.hourly?.wave_direction?.[i] ?? 300;
-      const windSpeed = weatherJson.hourly?.wind_speed_10m?.[i] ?? 14;
-      const windDirection = weatherJson.hourly?.wind_direction_10m?.[i] ?? 45;
-      const pressure = weatherJson.hourly?.surface_pressure?.[i] ?? 1015;
-      const temp = weatherJson.hourly?.temperature_2m?.[i] ?? 19;
+      const rawWaveHeight = marineJson.hourly?.wave_height?.[i];
+      const rawWavePeriod = marineJson.hourly?.wave_period?.[i];
+      const rawWaveDirection = marineJson.hourly?.wave_direction?.[i];
+      const rawWindSpeed = weatherJson.hourly?.wind_speed_10m?.[i];
+      const rawWindDirection = weatherJson.hourly?.wind_direction_10m?.[i];
+      const rawPressure = weatherJson.hourly?.surface_pressure?.[i];
+      const rawTemp = weatherJson.hourly?.temperature_2m?.[i];
+
+      // Validate measurements strictly; preserve legitimate 0 values, do not fabricate missing ones
+      if (
+        rawWaveHeight === null || rawWaveHeight === undefined || isNaN(rawWaveHeight) ||
+        rawWavePeriod === null || rawWavePeriod === undefined || isNaN(rawWavePeriod) ||
+        rawWindSpeed === null || rawWindSpeed === undefined || isNaN(rawWindSpeed) ||
+        rawPressure === null || rawPressure === undefined || isNaN(rawPressure) ||
+        rawTemp === null || rawTemp === undefined || isNaN(rawTemp)
+      ) {
+        throw new MarineProviderError(
+          `Missing or invalid required measurement at index ${i} (${times[i]})`,
+          this.providerId
+        );
+      }
+
+      const waveHeight = Number(rawWaveHeight);
+      const wavePeriod = Number(rawWavePeriod);
+      const waveDirection = normalizeDegrees(Number(rawWaveDirection ?? 0));
+      const windSpeed = Number(rawWindSpeed);
+      const windDirection = normalizeDegrees(Number(rawWindDirection ?? 0));
+      const pressure = Number(rawPressure);
+      const temp = Number(rawTemp);
 
       if (waveHeight > maxWave) maxWave = waveHeight;
       if (waveHeight < minWave) minWave = waveHeight;
@@ -105,6 +144,7 @@ export class OpenMeteoMarineProvider implements IMarineForecastProvider {
 
     const count = hourlyData.length || 1;
     const avgWindSpeed = Math.round((windSum / count) * 10) / 10;
+    const totalHorizonHours = times.length;
 
     return {
       location: {
@@ -114,15 +154,18 @@ export class OpenMeteoMarineProvider implements IMarineForecastProvider {
       },
       hourly: hourlyData,
       dailySummary: {
-        maxWaveHeight: maxWave,
-        minWaveHeight: minWave === 999 ? 0 : minWave,
+        maxWaveHeight: maxWave === -Infinity ? 0 : maxWave,
+        minWaveHeight: minWave === Infinity ? 0 : minWave,
         avgWindSpeed,
         recommendedTime: hourlyData[6]?.time || times[0] || new Date().toISOString(),
       },
       provenance: {
         provider: this.providerId,
-        retrievedAt: new Date().toISOString(),
+        retrievedAt: retrievalTimestamp,
+        sourceGeneratedAt: times[0] ? new Date(times[0]).toISOString() : retrievalTimestamp,
+        forecastHorizonHours: totalHorizonHours,
         quality: 'numerical_forecast',
+        status: 'forecast',
         coordinates: { latitude: lat, longitude: lon },
         units: { ...DEFAULT_MARINE_UNITS },
         isSimulatedFallback: false,

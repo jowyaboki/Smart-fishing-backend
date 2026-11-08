@@ -88,7 +88,7 @@ export class MarineService {
       // Fallback on network timeout or external API unreachable
     }
 
-    // High quality simulated marine forecast fallback
+    // High quality simulated marine forecast fallback: provenance preserves quality: 'simulated'
     const simulated = await this.simulatedForecastProvider.getForecast({
       latitude: lat,
       longitude: lon,
