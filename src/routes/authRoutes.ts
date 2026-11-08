@@ -3,22 +3,31 @@ import { z } from 'zod';
 import { AuthService } from '../services/authService';
 import { validateBody } from '../middlewares/validationMiddleware';
 import { authMiddleware, AuthenticatedRequest } from '../middlewares/authMiddleware';
+import { authRateLimiter } from '../middlewares/rateLimiter';
 
 const router = Router();
 
 const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  name: z.string().min(1, 'Name is required'),
-  preferredRegion: z.string().optional(),
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email('Invalid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  name: z.string().trim().min(1, 'Name is required'),
+  preferredRegion: z.string().trim().optional(),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email('Invalid email address'),
   password: z.string().min(1, 'Password is required'),
 });
 
-router.post('/register', validateBody(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register', authRateLimiter, validateBody(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await AuthService.register(req.body);
     res.status(201).json(result);
@@ -31,7 +40,7 @@ router.post('/register', validateBody(registerSchema), async (req: Request, res:
   }
 });
 
-router.post('/login', validateBody(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', authRateLimiter, validateBody(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await AuthService.login(req.body);
     res.json(result);

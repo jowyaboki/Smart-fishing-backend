@@ -1,8 +1,9 @@
 import express, { Express } from 'express';
-import cors from 'cors';
+import cors, { CorsOptions } from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { getDatabase } from './data/database';
+import { config } from './config';
 import authRoutes from './routes/authRoutes';
 import marineRoutes from './routes/marineRoutes';
 import fishingRoutes from './routes/fishingRoutes';
@@ -11,18 +12,58 @@ import aiRoutes from './routes/aiRoutes';
 import encyclopediaRoutes from './routes/encyclopediaRoutes';
 import { errorHandler } from './middlewares/errorHandler';
 
+export function configureCors(corsOrigin: string = config.corsOrigin): CorsOptions {
+  return {
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like native Android mobile apps, curl, server-to-server)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // If set to wildcard '*' in non-production, allow all
+      if (corsOrigin === '*') {
+        return callback(null, true);
+      }
+
+      // Split comma-separated origins if multiple configured
+      const allowedOrigins = corsOrigin
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  };
+}
+
 export function createApp(): Express {
   // Ensure database initialization
   getDatabase();
 
   const app = express();
 
-  // Standard middleware
-  app.use(helmet());
-  app.use(cors());
-  app.use(express.json());
+  // Trust proxy configuration (only enable when explicitly configured, e.g. behind Nginx)
+  if (config.trustProxy !== false) {
+    app.set('trust proxy', config.trustProxy);
+  } else {
+    app.set('trust proxy', false);
+  }
 
-  if (process.env.NODE_ENV !== 'test') {
+  // Security headers with Helmet
+  app.use(helmet());
+
+  // CORS configuration
+  app.use(cors(configureCors()));
+
+  // Payload limitation
+  app.use(express.json({ limit: '1mb' }));
+
+  if (config.nodeEnv !== 'test') {
     app.use(morgan('dev'));
   }
 
