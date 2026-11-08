@@ -107,6 +107,9 @@ export interface DataSuitabilityResult {
   classification: DataSuitabilityClassification;
   observationCount: number;
   timeSpanDays: number;
+  expectedHourlySlots: number;
+  coveredHourlySlots: number;
+  missingHourlySlots: number;
   dataCompletenessPercentage: number;
   coverageCheck: boolean;
   datumCheck: boolean;
@@ -125,6 +128,7 @@ export interface TideValidationOptions {
   allowMarginalData?: boolean;
   predictionResolutionMinutes?: number; // Configurable independent predicted series resolution (default 10 mins)
   requireIndependentDatumVerification?: boolean;
+  hourlySlotToleranceMinutes?: number; // Configurable slot matching tolerance (default ±30 mins)
 }
 
 /**

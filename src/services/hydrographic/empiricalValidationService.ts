@@ -42,6 +42,7 @@ export class EmpiricalValidationEngine {
     const executedAtUtc = new Date().toISOString();
     const runId = `val-${crypto.randomUUID()}`;
     const predictionResolutionMinutes = Math.max(1, options.predictionResolutionMinutes || 10);
+    const hourlySlotToleranceMinutes = Math.max(5, options.hourlySlotToleranceMinutes || 30);
 
     const station = this.repo.getStation(options.stationId);
     if (!station) {
@@ -73,76 +74,17 @@ export class EmpiricalValidationEngine {
 
     const seenTimestamps = new Set<string>();
 
-    // 2. Validate observations with detailed exclusion classification
+    // 2. Validate observations with strict and granular exclusion classification
     for (const obs of observations) {
-      // Datum check: strictly match station vertical datum
-      if (obs.verticalDatum !== station.verticalDatum) {
-        exclusionReasons.DATUM_MISMATCH++;
+      // Timestamp format validation
+      if (!obs.timestampUtc || typeof obs.timestampUtc !== 'string' || !obs.timestampUtc.endsWith('Z')) {
+        exclusionReasons.INVALID_TIMESTAMP++;
         excludedCount++;
         continue;
       }
 
-      // Check vertical datum verification requirements
-      if (options.requireIndependentDatumVerification) {
-        // Station metadata check: is datum independently verified by physical benchmark survey?
-        const isVerified = (station.metadata as any)?.isDatumIndependentlyVerified === true;
-        if (!isVerified) {
-          exclusionReasons.DATUM_NOT_VERIFIED++;
-          excludedCount++;
-          continue;
-        }
-      }
-
-      // Unit check: raw unit must be supported
-      if (!['m', 'cm', 'mm', 'ft'].includes(obs.rawUnit?.toLowerCase())) {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
-        continue;
-      }
-
-      // Coordinates validation: observation provenance coordinates must match station within reasonable tolerance (~0.05 deg / ~5km)
-      if (obs.provenance?.coordinates) {
-        const { latitude, longitude } = obs.provenance.coordinates;
-        const latDiff = Math.abs(latitude - station.latitude);
-        const lonDiff = Math.abs(longitude - station.longitude);
-        if (latDiff > 0.1 || lonDiff > 0.1) {
-          exclusionReasons.INVALID_COORDINATES++;
-          excludedCount++;
-          continue;
-        }
-      }
-
-      // Check physical water level bounds
-      try {
-        validateWaterLevelBounds(
-          obs.waterLevelMeters,
-          MOROCCAN_WATER_LEVEL_BOUNDS.MIN_METERS,
-          MOROCCAN_WATER_LEVEL_BOUNDS.MAX_METERS
-        );
-      } catch {
-        exclusionReasons.OUT_OF_BOUNDS++;
-        excludedCount++;
-        continue;
-      }
-
-      // Provenance check: must be authentic observed physical telemetry and not simulated fallback
-      const prov = obs.provenance;
-      if (
-        obs.qualityTier !== 'observed' ||
-        obs.dataStatus !== 'observation' ||
-        prov?.isSimulatedFallback === true ||
-        prov?.quality === 'simulated' ||
-        !prov?.provider ||
-        !prov?.retrievedAt
-      ) {
-        exclusionReasons.INVALID_PROVENANCE++;
-        excludedCount++;
-        continue;
-      }
-
-      // Strict timestamp ISO validation
       const date = new Date(obs.timestampUtc);
-      if (isNaN(date.getTime()) || !obs.timestampUtc.endsWith('Z')) {
+      if (isNaN(date.getTime())) {
         exclusionReasons.INVALID_TIMESTAMP++;
         excludedCount++;
         continue;
@@ -155,6 +97,94 @@ export class EmpiricalValidationEngine {
         continue;
       }
       seenTimestamps.add(obs.timestampUtc);
+
+      // Datum check: strictly match station vertical datum
+      if (obs.verticalDatum !== station.verticalDatum) {
+        exclusionReasons.DATUM_MISMATCH++;
+        excludedCount++;
+        continue;
+      }
+
+      // Check vertical datum verification requirements
+      if (options.requireIndependentDatumVerification) {
+        const isVerified = (station.metadata as any)?.isDatumIndependentlyVerified === true;
+        if (!isVerified) {
+          exclusionReasons.DATUM_NOT_VERIFIED++;
+          excludedCount++;
+          continue;
+        }
+      }
+
+      // Unit check: raw unit must be supported
+      const rawUnitClean = obs.rawUnit?.trim().toLowerCase();
+      if (!['m', 'cm', 'mm', 'ft'].includes(rawUnitClean)) {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      // Coordinates validation: observation provenance coordinates must be numeric, in range, and match station within ~0.1 deg (~10km)
+      const provCoords = obs.provenance?.coordinates;
+      if (
+        !provCoords ||
+        typeof provCoords.latitude !== 'number' ||
+        typeof provCoords.longitude !== 'number' ||
+        isNaN(provCoords.latitude) ||
+        isNaN(provCoords.longitude) ||
+        provCoords.latitude < -90 ||
+        provCoords.latitude > 90 ||
+        provCoords.longitude < -180 ||
+        provCoords.longitude > 180
+      ) {
+        exclusionReasons.INVALID_COORDINATES++;
+        excludedCount++;
+        continue;
+      }
+
+      const latDiff = Math.abs(provCoords.latitude - station.latitude);
+      const lonDiff = Math.abs(provCoords.longitude - station.longitude);
+      if (latDiff > 0.1 || lonDiff > 0.1) {
+        exclusionReasons.INVALID_COORDINATES++;
+        excludedCount++;
+        continue;
+      }
+
+      // Water level physical plausibility bounds check
+      try {
+        validateWaterLevelBounds(
+          obs.waterLevelMeters,
+          MOROCCAN_WATER_LEVEL_BOUNDS.MIN_METERS,
+          MOROCCAN_WATER_LEVEL_BOUNDS.MAX_METERS
+        );
+      } catch {
+        exclusionReasons.OUT_OF_BOUNDS++;
+        excludedCount++;
+        continue;
+      }
+
+      // Rigorous Provenance Validation:
+      // provider non-empty, retrievedAt valid UTC, units waterLevel consistent,
+      // qualityTier === observed, dataStatus === observation, no fallback/simulated
+      const prov = obs.provenance;
+      if (
+        !prov ||
+        !prov.provider ||
+        typeof prov.provider !== 'string' ||
+        prov.provider.trim() === '' ||
+        !prov.retrievedAt ||
+        typeof prov.retrievedAt !== 'string' ||
+        !prov.retrievedAt.endsWith('Z') ||
+        isNaN(new Date(prov.retrievedAt).getTime()) ||
+        obs.qualityTier !== 'observed' ||
+        obs.dataStatus !== 'observation' ||
+        prov.quality === 'simulated' ||
+        prov.isSimulatedFallback === true ||
+        (prov.units && prov.units.waterLevel && prov.units.waterLevel !== 'm')
+      ) {
+        exclusionReasons.INVALID_PROVENANCE++;
+        excludedCount++;
+        continue;
+      }
 
       // 3. Compute harmonic tide prediction for this exact coordinate and timestamp
       const tidePrediction = await this.tideProvider.getTidePrediction({
@@ -189,18 +219,22 @@ export class EmpiricalValidationEngine {
     let timeSpanDays = 0;
 
     if (validPairs.length > 0) {
+      // Sort valid pairs chronologically
+      validPairs.sort((a, b) => new Date(a.timestampUtc).getTime() - new Date(b.timestampUtc).getTime());
+
       if (!periodStartUtc) periodStartUtc = validPairs[0].timestampUtc;
       if (!periodEndUtc) periodEndUtc = validPairs[validPairs.length - 1].timestampUtc;
 
-      const startMs = new Date(periodStartUtc).getTime();
-      const endMs = new Date(periodEndUtc).getTime();
-      timeSpanDays = Math.max(0, Math.round(((endMs - startMs) / (86400 * 1000)) * 100) / 100);
+      // Actual observation timespan is between first and last valid observation
+      const firstObsMs = new Date(validPairs[0].timestampUtc).getTime();
+      const lastObsMs = new Date(validPairs[validPairs.length - 1].timestampUtc).getTime();
+      timeSpanDays = Math.max(0, Math.round(((lastObsMs - firstObsMs) / (86400 * 1000)) * 100) / 100);
     } else {
       if (!periodStartUtc) periodStartUtc = executedAtUtc;
       if (!periodEndUtc) periodEndUtc = executedAtUtc;
     }
 
-    // 5. Evaluate Data Suitability Criteria
+    // 5. Evaluate Data Suitability Criteria with true hourly slot coverage
     // Datum verification status distinction:
     // CONFIGURED: datum populated from station configuration metadata
     // SOURCE_DECLARED: datum declared by data source
@@ -215,12 +249,16 @@ export class EmpiricalValidationEngine {
     const suitability = this.evaluateSuitability({
       stationVerticalDatum: station.verticalDatum,
       datumVerificationStatus,
-      validPairsCount: validPairs.length,
+      validPairs,
       timeSpanDays,
       hasSimulatedOrInvalidData: excludedCount > 0,
       periodStartUtc,
       periodEndUtc,
+      slotToleranceMinutes: hourlySlotToleranceMinutes,
     });
+
+    // Populate INSUFFICIENT_COVERAGE with missing hourly slots count
+    exclusionReasons.INSUFFICIENT_COVERAGE = suitability.missingHourlySlots;
 
     // 6. Calculate statistical metrics on aligned pairs
     let statistics = null;
@@ -230,8 +268,6 @@ export class EmpiricalValidationEngine {
       statistics = calculateStatisticalMetrics(validPairs);
 
       // 7. Peak Detection on an Independent Predictive Series
-      // Rather than sampling predictions only at observation instants, we generate
-      // a continuous/high-resolution independent predicted series across the observation window.
       const startMs = new Date(periodStartUtc).getTime();
       const endMs = new Date(periodEndUtc).getTime();
       const stepMs = predictionResolutionMinutes * 60 * 1000;
@@ -259,7 +295,7 @@ export class EmpiricalValidationEngine {
     }
 
     // 8. Overall Empirical Validation Status
-    // Safely defaults to NOT_VERIFIED: in the absence of certified field physical sensor telemetry,
+    // Strictly NOT_VERIFIED: in the absence of certified field physical sensor telemetry,
     // empirical validation cannot claim EMPIRICALLY_VALIDATED.
     const status: EmpiricalValidationStatus = 'NOT_VERIFIED';
 
@@ -278,7 +314,7 @@ export class EmpiricalValidationEngine {
       exclusionReasons,
       isCalibrationEnabled: false, // Safeguard strictly locked to false
       metadata: {
-        engineVersion: '2.4.1',
+        engineVersion: '2.4.2',
         predictionProviderId: this.tideProvider.providerId,
         verticalDatum: station.verticalDatum,
         datumVerificationStatus,
@@ -297,36 +333,93 @@ export class EmpiricalValidationEngine {
   private evaluateSuitability(params: {
     stationVerticalDatum: string;
     datumVerificationStatus: DatumVerificationStatus;
-    validPairsCount: number;
+    validPairs: ValidationObservationPair[];
     timeSpanDays: number;
     hasSimulatedOrInvalidData: boolean;
     periodStartUtc: string;
     periodEndUtc: string;
+    slotToleranceMinutes: number;
   }): DataSuitabilityResult {
     const reasons: string[] = [];
 
-    // Temporal grid completeness calculation:
-    // Expected hourly count = (duration in hours) + 1
+    // True Temporal Grid Slot Construction:
+    // Builds an explicit array of top-of-hour UTC slot timestamps between periodStartUtc and periodEndUtc
     const startMs = new Date(params.periodStartUtc).getTime();
     const endMs = new Date(params.periodEndUtc).getTime();
-    const durationHours = Math.max(1, Math.round((endMs - startMs) / (3600 * 1000)));
-    const expectedHourlyObservations = durationHours + 1;
 
-    const dataCompletenessPercentage =
-      Math.min(100, Math.round((params.validPairsCount / expectedHourlyObservations) * 1000) / 10);
+    let expectedHourlySlots = 0;
+    let coveredHourlySlots = 0;
+    let missingHourlySlots = 0;
+    let dataCompletenessPercentage = 0;
 
-    // Strict 85.0% temporal completeness rule for SUITABLE
+    if (params.validPairs.length === 0 || endMs <= startMs) {
+      expectedHourlySlots = 0;
+      coveredHourlySlots = 0;
+      missingHourlySlots = 0;
+      dataCompletenessPercentage = 0;
+    } else {
+      // Find starting hour floor (YYYY-MM-DDTHH:00:00.000Z)
+      const startDate = new Date(startMs);
+      const startSlotMs = Date.UTC(
+        startDate.getUTCFullYear(),
+        startDate.getUTCMonth(),
+        startDate.getUTCDate(),
+        startDate.getUTCHours(),
+        0,
+        0,
+        0
+      );
+
+      const toleranceMs = params.slotToleranceMinutes * 60 * 1000;
+      const slotMap = new Map<number, boolean>();
+
+      // Generate expected hourly slots
+      for (let slotTime = startSlotMs; slotTime <= endMs; slotTime += 3600 * 1000) {
+        slotMap.set(slotTime, false);
+      }
+      expectedHourlySlots = slotMap.size;
+
+      // Assign valid observations to discrete hourly slots
+      for (const pair of params.validPairs) {
+        const obsTime = new Date(pair.timestampUtc).getTime();
+        // Check which slot this observation falls into within tolerance
+        for (const [slotTime, isCovered] of slotMap.entries()) {
+          if (!isCovered && Math.abs(obsTime - slotTime) <= toleranceMs) {
+            slotMap.set(slotTime, true);
+            break; // One observation covers one slot
+          }
+        }
+      }
+
+      for (const isCovered of slotMap.values()) {
+        if (isCovered) {
+          coveredHourlySlots++;
+        } else {
+          missingHourlySlots++;
+        }
+      }
+
+      dataCompletenessPercentage =
+        expectedHourlySlots > 0
+          ? Math.round((coveredHourlySlots / expectedHourlySlots) * 1000) / 10
+          : 0;
+    }
+
+    // Strict 85.0% temporal completeness rule
     const hasSufficientCompleteness = dataCompletenessPercentage >= 85.0;
-    const hasSufficientObservations = params.validPairsCount >= CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS;
+    const hasSufficientObservations = params.validPairs.length >= CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS;
     const hasSufficientTimeSpan = params.timeSpanDays >= CALIBRATION_REQUIREMENTS.MIN_SPAN_DAYS;
 
     const coverageCheck = hasSufficientObservations && hasSufficientTimeSpan && hasSufficientCompleteness;
     const datumCheck = Boolean(params.stationVerticalDatum);
     const provenanceCheck = !params.hasSimulatedOrInvalidData;
 
+    // Strict rule: SUITABLE strictly requires INDEPENDENTLY_VERIFIED
+    const isDatumIndependentlyVerified = params.datumVerificationStatus === 'INDEPENDENTLY_VERIFIED';
+
     if (!hasSufficientObservations) {
       reasons.push(
-        `Observation count (${params.validPairsCount}) is below standard minimum threshold (${CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS} hourly pairs).`
+        `Observation count (${params.validPairs.length}) is below standard minimum threshold (${CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS} hourly pairs).`
       );
     }
 
@@ -338,7 +431,7 @@ export class EmpiricalValidationEngine {
 
     if (!hasSufficientCompleteness) {
       reasons.push(
-        `Temporal grid completeness (${dataCompletenessPercentage}%) is below the minimum required threshold of 85.0% for SUITABLE classification.`
+        `Temporal grid completeness (${dataCompletenessPercentage}%, ${coveredHourlySlots}/${expectedHourlySlots} slots) is below the minimum required threshold of 85.0% for SUITABLE classification.`
       );
     }
 
@@ -346,9 +439,9 @@ export class EmpiricalValidationEngine {
       reasons.push('Station vertical datum is unvalidated or missing.');
     }
 
-    if (params.datumVerificationStatus !== 'INDEPENDENTLY_VERIFIED') {
+    if (!isDatumIndependentlyVerified) {
       reasons.push(
-        `Vertical datum is '${params.datumVerificationStatus}' but lacks independent physical benchmark survey verification.`
+        `Vertical datum is '${params.datumVerificationStatus}' and lacks independent physical hydrographic benchmark verification. SUITABLE classification requires INDEPENDENTLY_VERIFIED datum.`
       );
     }
 
@@ -362,22 +455,27 @@ export class EmpiricalValidationEngine {
     // - >= 720 observations
     // - >= 29.53 days
     // - completeness >= 85.0%
-    // - valid vertical datum
-    // - valid provenance (no excluded corrupted/synthetic rows)
-    if (coverageCheck && datumCheck && provenanceCheck) {
+    // - valid vertical datum AND INDEPENDENTLY_VERIFIED
+    // - valid provenance (no excluded rows)
+    if (coverageCheck && datumCheck && isDatumIndependentlyVerified && provenanceCheck) {
       classification = 'SUITABLE';
     } else if (
-      params.validPairsCount >= 100 &&
+      params.validPairs.length >= 100 &&
       params.timeSpanDays >= 5.0 &&
-      datumCheck
+      datumCheck &&
+      dataCompletenessPercentage >= 50.0
     ) {
+      // MARGINAL requires >= 100 obs, >= 5 days, valid datum, and at least 50% completeness
       classification = 'MARGINAL';
     }
 
     return {
       classification,
-      observationCount: params.validPairsCount,
+      observationCount: params.validPairs.length,
       timeSpanDays: params.timeSpanDays,
+      expectedHourlySlots,
+      coveredHourlySlots,
+      missingHourlySlots,
       dataCompletenessPercentage,
       coverageCheck,
       datumCheck,
