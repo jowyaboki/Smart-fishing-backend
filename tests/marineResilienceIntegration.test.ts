@@ -156,4 +156,71 @@ describe('Marine Resilience Integration Tests', () => {
     expect(breaker.getState()).toBe('CLOSED');
     expect(providerCalls).toBe(3);
   });
+
+  it('guarantees that switching forecast providers purges cache and does not return stale provider results', async () => {
+    let providerACalls = 0;
+    const providerA: IMarineForecastProvider = {
+      providerId: 'provider-alpha',
+      isAvailable: async () => true,
+      getForecast: async (params) => {
+        providerACalls++;
+        return {
+          location: { latitude: params.latitude, longitude: params.longitude, name: 'Alpha Spot' },
+          hourly: [],
+          dailySummary: { maxWaveHeight: 1, minWaveHeight: 1, avgWindSpeed: 10, recommendedTime: 'now' },
+          provenance: {
+            provider: 'provider-alpha',
+            retrievedAt: new Date().toISOString(),
+            quality: 'numerical_forecast',
+            status: 'forecast',
+            coordinates: { latitude: params.latitude, longitude: params.longitude },
+            units: { ...DEFAULT_MARINE_UNITS },
+            isSimulatedFallback: false,
+            confidenceScore: 0.9,
+          },
+        };
+      },
+    };
+
+    let providerBCalls = 0;
+    const providerB: IMarineForecastProvider = {
+      providerId: 'provider-beta',
+      isAvailable: async () => true,
+      getForecast: async (params) => {
+        providerBCalls++;
+        return {
+          location: { latitude: params.latitude, longitude: params.longitude, name: 'Beta Spot' },
+          hourly: [],
+          dailySummary: { maxWaveHeight: 2, minWaveHeight: 2, avgWindSpeed: 20, recommendedTime: 'now' },
+          provenance: {
+            provider: 'provider-beta',
+            retrievedAt: new Date().toISOString(),
+            quality: 'numerical_forecast',
+            status: 'forecast',
+            coordinates: { latitude: params.latitude, longitude: params.longitude },
+            units: { ...DEFAULT_MARINE_UNITS },
+            isSimulatedFallback: false,
+            confidenceScore: 0.9,
+          },
+        };
+      },
+    };
+
+    // 1. Query with Provider A -> populates cache with Provider A
+    MarineService.setProviders({ forecastProvider: providerA });
+    const resA = await MarineService.getForecast({ latitude: 33.58, longitude: -7.61, days: 1 });
+    expect(resA.provenance?.provider).toBe('provider-alpha');
+    expect(providerACalls).toBe(1);
+    expect(MarineService.getCacheSize()).toBe(1);
+
+    // 2. Switch to Provider B -> automatically clears cache
+    MarineService.setProviders({ forecastProvider: providerB });
+    expect(MarineService.getCacheSize()).toBe(0);
+
+    // 3. Query same coordinates -> must hit Provider B, not return stale Provider A data
+    const resB = await MarineService.getForecast({ latitude: 33.58, longitude: -7.61, days: 1 });
+    expect(resB.provenance?.provider).toBe('provider-beta');
+    expect(providerBCalls).toBe(1);
+    expect(providerACalls).toBe(1); // Provider A was not called again
+  });
 });
