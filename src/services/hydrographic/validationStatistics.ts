@@ -169,31 +169,63 @@ export interface ExtremaPoint {
 
 /**
  * Detects local extrema (high and low peaks) from discrete water level time-series.
- * Validates finite timestamps and heights before processing.
+ * Replaces permissive filtering with an explicit deterministic validation policy:
+ * - Validates timestamp format (must be valid string ending in 'Z').
+ * - Validates timeMs and heightMeters with Number.isFinite().
+ * - Verifies timestampUtc and timeMs represent the exact same millisecond.
+ * - Detects duplicate timestamps.
+ * Throws explicit descriptive errors on any invalid point rather than silently corrupting results.
  */
 export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPoint[] {
-  if (!Array.isArray(points) || points.length < 3) {
+  if (!Array.isArray(points)) {
+    throw new Error('Points must be an array');
+  }
+
+  if (points.length < 3) {
     return [];
   }
 
-  // Filter out any invalid points with non-finite timestamp or height
-  const validPoints = points.filter(
-    (p) =>
-      p &&
-      typeof p.timeMs === 'number' &&
-      Number.isFinite(p.timeMs) &&
-      typeof p.heightMeters === 'number' &&
-      Number.isFinite(p.heightMeters) &&
-      typeof p.timestampUtc === 'string' &&
-      p.timestampUtc.trim().length > 0
-  );
+  const seenTimestamps = new Set<string>();
 
-  if (validPoints.length < 3) {
-    return [];
+  // Explicit deterministic validation of every single point
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (!p || typeof p !== 'object') {
+      throw new Error(`Invalid water level point at index ${i}`);
+    }
+
+    if (typeof p.timestampUtc !== 'string' || !p.timestampUtc.endsWith('Z')) {
+      throw new Error(`Invalid ISO 8601 UTC timestamp at index ${i}: '${p.timestampUtc}'`);
+    }
+
+    const parsedDate = new Date(p.timestampUtc);
+    const parsedMs = parsedDate.getTime();
+    if (isNaN(parsedMs)) {
+      throw new Error(`Malformed timestamp at index ${i}: '${p.timestampUtc}'`);
+    }
+
+    if (typeof p.timeMs !== 'number' || !Number.isFinite(p.timeMs)) {
+      throw new Error(`Non-finite timeMs at index ${i}: ${p.timeMs}`);
+    }
+
+    if (p.timeMs !== parsedMs) {
+      throw new Error(
+        `Desynchronized point at index ${i}: timestampUtc '${p.timestampUtc}' (${parsedMs}ms) !== timeMs (${p.timeMs}ms)`
+      );
+    }
+
+    if (typeof p.heightMeters !== 'number' || !Number.isFinite(p.heightMeters)) {
+      throw new Error(`Non-finite heightMeters at index ${i}: ${p.heightMeters}`);
+    }
+
+    if (seenTimestamps.has(p.timestampUtc)) {
+      throw new Error(`Duplicate timestamp detected in point series at index ${i}: '${p.timestampUtc}'`);
+    }
+    seenTimestamps.add(p.timestampUtc);
   }
 
   // Ensure chronological order
-  const sorted = [...validPoints].sort((a, b) => a.timeMs - b.timeMs);
+  const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
   const extrema: ExtremaPoint[] = [];
 
   for (let i = 1; i < sorted.length - 1; i++) {
@@ -234,13 +266,26 @@ export function calculatePeakValidationMetrics(
   } = {}
 ): PeakValidationMetrics {
   const maxMatchingWindowMinutes = options.maxMatchingWindowMinutes ?? 180;
-  if (!Number.isFinite(maxMatchingWindowMinutes) || maxMatchingWindowMinutes <= 0) {
-    throw new Error(`Invalid maxMatchingWindowMinutes: ${maxMatchingWindowMinutes}`);
+  // Protect matching window arithmetic: window must be finite, positive, and <= 1440 min (24 hours)
+  if (
+    typeof maxMatchingWindowMinutes !== 'number' ||
+    !Number.isFinite(maxMatchingWindowMinutes) ||
+    maxMatchingWindowMinutes <= 0 ||
+    maxMatchingWindowMinutes > 1440
+  ) {
+    throw new Error(`Invalid maxMatchingWindowMinutes (must be finite positive <= 1440m): ${maxMatchingWindowMinutes}`);
+  }
+
+  const maxWindowMs = maxMatchingWindowMinutes * 60 * 1000;
+  if (!Number.isFinite(maxWindowMs) || maxWindowMs <= 0) {
+    throw new Error(`Arithmetic overflow in maxWindowMs calculation: ${maxWindowMs}`);
   }
 
   if (
     options.medianObsIntervalMinutes !== undefined &&
-    (!Number.isFinite(options.medianObsIntervalMinutes) || options.medianObsIntervalMinutes <= 0)
+    (typeof options.medianObsIntervalMinutes !== 'number' ||
+      !Number.isFinite(options.medianObsIntervalMinutes) ||
+      options.medianObsIntervalMinutes <= 0)
   ) {
     throw new Error(`Invalid medianObsIntervalMinutes: ${options.medianObsIntervalMinutes}`);
   }
@@ -280,7 +325,6 @@ export function calculatePeakValidationMetrics(
     : `Observation temporal resolution (${samplingIntervalMinutes}m) exceeds recommended threshold (<=15m). Peak timing errors reflect discrete sampling quantization rather than true harmonic model phase divergence.`;
 
   const matchedPeaks: MatchedTidalPeak[] = [];
-  const maxWindowMs = maxMatchingWindowMinutes * 60 * 1000;
 
   let highMatchedCount = 0;
   let lowMatchedCount = 0;
@@ -312,11 +356,18 @@ export function calculatePeakValidationMetrics(
       const timingErrorMinutes = (matchedPred.timeMs - obs.timeMs) / (60 * 1000);
 
       if (!Number.isFinite(heightError) || !Number.isFinite(timingErrorMinutes)) {
-        continue;
+        throw new Error('Non-finite peak height or timing error calculated');
       }
 
       if (obs.type === 'High') highMatchedCount++;
       if (obs.type === 'Low') lowMatchedCount++;
+
+      const roundedHeightError = Math.round(heightError * 10000) / 10000;
+      const roundedTimingError = Math.round(timingErrorMinutes * 100) / 100;
+
+      if (!Number.isFinite(roundedHeightError) || !Number.isFinite(roundedTimingError)) {
+        throw new Error('Non-finite rounded peak error output');
+      }
 
       matchedPeaks.push({
         type: obs.type,
@@ -324,8 +375,8 @@ export function calculatePeakValidationMetrics(
         observedHeightMeters: obs.heightMeters,
         predictedTimeUtc: matchedPred.timestampUtc,
         predictedHeightMeters: matchedPred.heightMeters,
-        heightErrorMeters: Math.round(heightError * 10000) / 10000,
-        timingErrorMinutes: Math.round(timingErrorMinutes * 100) / 100,
+        heightErrorMeters: roundedHeightError,
+        timingErrorMinutes: roundedTimingError,
       });
     }
   }
@@ -333,9 +384,12 @@ export function calculatePeakValidationMetrics(
   const unmatchedObservedPeaks = observedExtrema.length - matchedPeaks.length;
   const unmatchedPredictedPeaks = predictedExtrema.length - matchedPeaks.length;
 
+  const totalPeaksDetected = observedExtrema.length + predictedExtrema.length;
+  const roundedSamplingInterval = Math.round(samplingIntervalMinutes * 10) / 10;
+
   if (matchedPeaks.length === 0) {
     return {
-      totalPeaksDetected: observedExtrema.length + predictedExtrema.length,
+      totalPeaksDetected,
       observedPeaksDetected: observedExtrema.length,
       predictedPeaksDetected: predictedExtrema.length,
       highTidePeaksMatched: 0,
@@ -346,7 +400,7 @@ export function calculatePeakValidationMetrics(
       peakHeightRmseMeters: 0,
       meanPeakTimingErrorMinutes: 0,
       peakTimingRmseMinutes: 0,
-      observationSamplingIntervalMinutes: Math.round(samplingIntervalMinutes * 10) / 10,
+      observationSamplingIntervalMinutes: roundedSamplingInterval,
       isTimingResolutionScientificallyDefensible,
       timingResolutionDisclaimer,
       matchedPeaks: [],
@@ -403,19 +457,34 @@ export function calculatePeakValidationMetrics(
     throw new Error('Non-finite peak validation metric computed');
   }
 
+  const roundedMeanHeight = Math.round(meanHeightError * 10000) / 10000;
+  const roundedHeightRmse = Math.round(heightRmse * 10000) / 10000;
+  const roundedMeanTiming = Math.round(meanTimingError * 100) / 100;
+  const roundedTimingRmse = Math.round(timingRmse * 100) / 100;
+
+  if (
+    !Number.isFinite(roundedMeanHeight) ||
+    !Number.isFinite(roundedHeightRmse) ||
+    !Number.isFinite(roundedMeanTiming) ||
+    !Number.isFinite(roundedTimingRmse) ||
+    !Number.isFinite(roundedSamplingInterval)
+  ) {
+    throw new Error('Non-finite rounded output in peak validation metrics');
+  }
+
   return {
-    totalPeaksDetected: observedExtrema.length + predictedExtrema.length,
+    totalPeaksDetected,
     observedPeaksDetected: observedExtrema.length,
     predictedPeaksDetected: predictedExtrema.length,
     highTidePeaksMatched: highMatchedCount,
     lowTidePeaksMatched: lowMatchedCount,
     unmatchedObservedPeaks,
     unmatchedPredictedPeaks,
-    meanPeakHeightErrorMeters: Math.round(meanHeightError * 10000) / 10000,
-    peakHeightRmseMeters: Math.round(heightRmse * 10000) / 10000,
-    meanPeakTimingErrorMinutes: Math.round(meanTimingError * 100) / 100,
-    peakTimingRmseMinutes: Math.round(timingRmse * 100) / 100,
-    observationSamplingIntervalMinutes: Math.round(samplingIntervalMinutes * 10) / 10,
+    meanPeakHeightErrorMeters: roundedMeanHeight,
+    peakHeightRmseMeters: roundedHeightRmse,
+    meanPeakTimingErrorMinutes: roundedMeanTiming,
+    peakTimingRmseMinutes: roundedTimingRmse,
+    observationSamplingIntervalMinutes: roundedSamplingInterval,
     isTimingResolutionScientificallyDefensible,
     timingResolutionDisclaimer,
     matchedPeaks,

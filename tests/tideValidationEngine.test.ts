@@ -174,23 +174,63 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
     });
 
     it('validates extrema points and peak metric parameters for finite numbers and non-overflow', () => {
-      // 1. Extrema detector rejects non-finite points
-      const dirtyPoints: DiscreteWaterLevelPoint[] = [
-        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
-        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 3600000, heightMeters: Infinity },
-        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 7200000, heightMeters: 2.0 },
-      ];
-      expect(detectLocalExtrema(dirtyPoints)).toEqual([]);
+      // 1. Extrema detector explicitly throws on non-finite or desynchronized points
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite timeMs');
 
-      // 2. Peak metrics rejects invalid matching window
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: Infinity },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite heightMeters');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: 'invalid-date', timeMs: 0, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 9999999999, heightMeters: 1.0 }, // desynchronized!
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Desynchronized point');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 2.0 }, // duplicate!
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Duplicate timestamp detected');
+
+      // 2. Peak metrics rejects invalid matching window (NaN, negative, or overflowing)
+      const t0 = new Date('2026-11-08T00:00:00Z').getTime();
       const validPoints: DiscreteWaterLevelPoint[] = [
-        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 0, heightMeters: 1.0 },
-        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 3600000, heightMeters: 2.0 },
-        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 7200000, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: t0 + 3600000, heightMeters: 2.0 },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 1.0 },
       ];
       expect(() =>
         calculatePeakValidationMetrics(validPoints, validPoints, {
           maxMatchingWindowMinutes: NaN,
+        })
+      ).toThrow('Invalid maxMatchingWindowMinutes');
+
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          maxMatchingWindowMinutes: 1e10, // Overflow / unreasonably large (> 1440 min)
         })
       ).toThrow('Invalid maxMatchingWindowMinutes');
 
