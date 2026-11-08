@@ -3,14 +3,15 @@ import { HydrographicRepository } from '../../data/hydrographicRepository';
 import {
   CALIBRATION_REQUIREMENTS,
   MOROCCAN_WATER_LEVEL_BOUNDS,
-  validateVerticalDatum,
   validateWaterLevelBounds,
 } from '../../domain/hydrographicModels';
 import {
   DataSuitabilityResult,
+  DatumVerificationStatus,
   EmpiricalValidationStatus,
   TideValidationOptions,
   TideValidationRun,
+  ValidationExclusionCounters,
   ValidationObservationPair,
 } from '../../domain/tideValidationModels';
 import { MoroccanHarmonicTideProvider } from '../marine/tides/harmonicTideProvider';
@@ -40,6 +41,7 @@ export class EmpiricalValidationEngine {
   ): Promise<TideValidationRun> {
     const executedAtUtc = new Date().toISOString();
     const runId = `val-${crypto.randomUUID()}`;
+    const predictionResolutionMinutes = Math.max(1, options.predictionResolutionMinutes || 10);
 
     const station = this.repo.getStation(options.stationId);
     if (!station) {
@@ -53,28 +55,61 @@ export class EmpiricalValidationEngine {
       toTimestampUtc: options.endDateUtc,
     });
 
-    const exclusionReasons: Record<string, number> = {
-      datumMismatch: 0,
-      invalidProvenance: 0,
-      duplicateTimestamp: 0,
-      outOfBoundsWaterLevel: 0,
-      invalidTimestampFormat: 0,
+    const exclusionReasons: ValidationExclusionCounters = {
+      DATUM_MISMATCH: 0,
+      DATUM_NOT_VERIFIED: 0,
+      INVALID_PROVENANCE: 0,
+      INVALID_UNIT: 0,
+      INVALID_COORDINATES: 0,
+      INVALID_TIMESTAMP: 0,
+      DUPLICATE_TIMESTAMP: 0,
+      OUT_OF_BOUNDS: 0,
+      INSUFFICIENT_COVERAGE: 0,
     };
 
     let excludedCount = 0;
     const validPairs: ValidationObservationPair[] = [];
     const observedPoints: DiscreteWaterLevelPoint[] = [];
-    const predictedPoints: DiscreteWaterLevelPoint[] = [];
 
     const seenTimestamps = new Set<string>();
 
-    // 2. Validate observations and match with astronomical harmonic predictions
+    // 2. Validate observations with detailed exclusion classification
     for (const obs of observations) {
       // Datum check: strictly match station vertical datum
       if (obs.verticalDatum !== station.verticalDatum) {
-        exclusionReasons.datumMismatch++;
+        exclusionReasons.DATUM_MISMATCH++;
         excludedCount++;
         continue;
+      }
+
+      // Check vertical datum verification requirements
+      if (options.requireIndependentDatumVerification) {
+        // Station metadata check: is datum independently verified by physical benchmark survey?
+        const isVerified = (station.metadata as any)?.isDatumIndependentlyVerified === true;
+        if (!isVerified) {
+          exclusionReasons.DATUM_NOT_VERIFIED++;
+          excludedCount++;
+          continue;
+        }
+      }
+
+      // Unit check: raw unit must be supported
+      if (!['m', 'cm', 'mm', 'ft'].includes(obs.rawUnit?.toLowerCase())) {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      // Coordinates validation: observation provenance coordinates must match station within reasonable tolerance (~0.05 deg / ~5km)
+      if (obs.provenance?.coordinates) {
+        const { latitude, longitude } = obs.provenance.coordinates;
+        const latDiff = Math.abs(latitude - station.latitude);
+        const lonDiff = Math.abs(longitude - station.longitude);
+        if (latDiff > 0.1 || lonDiff > 0.1) {
+          exclusionReasons.INVALID_COORDINATES++;
+          excludedCount++;
+          continue;
+        }
       }
 
       // Check physical water level bounds
@@ -85,18 +120,22 @@ export class EmpiricalValidationEngine {
           MOROCCAN_WATER_LEVEL_BOUNDS.MAX_METERS
         );
       } catch {
-        exclusionReasons.outOfBoundsWaterLevel++;
+        exclusionReasons.OUT_OF_BOUNDS++;
         excludedCount++;
         continue;
       }
 
-      // Provenance check: must be observed and not simulated fallback
+      // Provenance check: must be authentic observed physical telemetry and not simulated fallback
+      const prov = obs.provenance;
       if (
         obs.qualityTier !== 'observed' ||
         obs.dataStatus !== 'observation' ||
-        obs.provenance?.isSimulatedFallback === true
+        prov?.isSimulatedFallback === true ||
+        prov?.quality === 'simulated' ||
+        !prov?.provider ||
+        !prov?.retrievedAt
       ) {
-        exclusionReasons.invalidProvenance++;
+        exclusionReasons.INVALID_PROVENANCE++;
         excludedCount++;
         continue;
       }
@@ -104,14 +143,14 @@ export class EmpiricalValidationEngine {
       // Strict timestamp ISO validation
       const date = new Date(obs.timestampUtc);
       if (isNaN(date.getTime()) || !obs.timestampUtc.endsWith('Z')) {
-        exclusionReasons.invalidTimestampFormat++;
+        exclusionReasons.INVALID_TIMESTAMP++;
         excludedCount++;
         continue;
       }
 
       // Duplicate timestamp check
       if (seenTimestamps.has(obs.timestampUtc)) {
-        exclusionReasons.duplicateTimestamp++;
+        exclusionReasons.DUPLICATE_TIMESTAMP++;
         excludedCount++;
         continue;
       }
@@ -142,15 +181,9 @@ export class EmpiricalValidationEngine {
         timeMs,
         heightMeters: obs.waterLevelMeters,
       });
-
-      predictedPoints.push({
-        timestampUtc: obs.timestampUtc,
-        timeMs,
-        heightMeters: predictedHeight,
-      });
     }
 
-    // 4. Determine temporal coverage
+    // 4. Determine temporal coverage and duration
     let periodStartUtc = options.startDateUtc || '';
     let periodEndUtc = options.endDateUtc || '';
     let timeSpanDays = 0;
@@ -168,26 +201,66 @@ export class EmpiricalValidationEngine {
     }
 
     // 5. Evaluate Data Suitability Criteria
+    // Datum verification status distinction:
+    // CONFIGURED: datum populated from station configuration metadata
+    // SOURCE_DECLARED: datum declared by data source
+    // INDEPENDENTLY_VERIFIED: confirmed by certified physical hydrographic benchmark survey
+    let datumVerificationStatus: DatumVerificationStatus = 'CONFIGURED';
+    if ((station.metadata as any)?.isDatumIndependentlyVerified === true) {
+      datumVerificationStatus = 'INDEPENDENTLY_VERIFIED';
+    } else if (validPairs.length > 0 && validPairs[0].verticalDatum) {
+      datumVerificationStatus = 'SOURCE_DECLARED';
+    }
+
     const suitability = this.evaluateSuitability({
       stationVerticalDatum: station.verticalDatum,
+      datumVerificationStatus,
       validPairsCount: validPairs.length,
       timeSpanDays,
       hasSimulatedOrInvalidData: excludedCount > 0,
+      periodStartUtc,
+      periodEndUtc,
     });
 
-    // 6. Calculate statistical metrics and peak error metrics if pairs exist
+    // 6. Calculate statistical metrics on aligned pairs
     let statistics = null;
     let peakMetrics = null;
 
     if (validPairs.length > 0) {
       statistics = calculateStatisticalMetrics(validPairs);
-      peakMetrics = calculatePeakValidationMetrics(observedPoints, predictedPoints);
+
+      // 7. Peak Detection on an Independent Predictive Series
+      // Rather than sampling predictions only at observation instants, we generate
+      // a continuous/high-resolution independent predicted series across the observation window.
+      const startMs = new Date(periodStartUtc).getTime();
+      const endMs = new Date(periodEndUtc).getTime();
+      const stepMs = predictionResolutionMinutes * 60 * 1000;
+
+      const independentPredictedPoints: DiscreteWaterLevelPoint[] = [];
+
+      for (let t = startMs; t <= endMs; t += stepMs) {
+        const pointDate = new Date(t);
+        const pred = await this.tideProvider.getTidePrediction({
+          latitude: station.latitude,
+          longitude: station.longitude,
+          targetDate: pointDate,
+        });
+
+        independentPredictedPoints.push({
+          timestampUtc: pointDate.toISOString(),
+          timeMs: t,
+          heightMeters: pred.currentTide.heightMeters,
+        });
+      }
+
+      peakMetrics = calculatePeakValidationMetrics(observedPoints, independentPredictedPoints, {
+        maxMatchingWindowMinutes: 180,
+      });
     }
 
-    // 7. Determine overall empirical validation status
-    // In accordance with P2.4 specifications and architectural safeguards:
-    // If software-tested or executed with synthetic/zero empirical observations:
-    // status is strictly 'NOT_VERIFIED'
+    // 8. Overall Empirical Validation Status
+    // Safely defaults to NOT_VERIFIED: in the absence of certified field physical sensor telemetry,
+    // empirical validation cannot claim EMPIRICALLY_VALIDATED.
     const status: EmpiricalValidationStatus = 'NOT_VERIFIED';
 
     const validationRun: TideValidationRun = {
@@ -203,17 +276,19 @@ export class EmpiricalValidationEngine {
       peakMetrics,
       excludedCount,
       exclusionReasons,
-      isCalibrationEnabled: false, // Permanently false per instructions
+      isCalibrationEnabled: false, // Safeguard strictly locked to false
       metadata: {
-        engineVersion: '2.4.0',
+        engineVersion: '2.4.1',
         predictionProviderId: this.tideProvider.providerId,
         verticalDatum: station.verticalDatum,
+        datumVerificationStatus,
+        predictionResolutionMinutes,
         notes:
           'Empirical tide validation run against persisted hydrographic observation telemetry. Automated harmonic calibration is permanently disabled.',
       },
     };
 
-    // 8. Persist validation run in SQLite
+    // 9. Persist validation run in SQLite
     this.repo.saveValidationRun(validationRun);
 
     return validationRun;
@@ -221,28 +296,49 @@ export class EmpiricalValidationEngine {
 
   private evaluateSuitability(params: {
     stationVerticalDatum: string;
+    datumVerificationStatus: DatumVerificationStatus;
     validPairsCount: number;
     timeSpanDays: number;
     hasSimulatedOrInvalidData: boolean;
+    periodStartUtc: string;
+    periodEndUtc: string;
   }): DataSuitabilityResult {
     const reasons: string[] = [];
 
-    const coverageCheck =
-      params.validPairsCount >= CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS &&
-      params.timeSpanDays >= CALIBRATION_REQUIREMENTS.MIN_SPAN_DAYS;
+    // Temporal grid completeness calculation:
+    // Expected hourly count = (duration in hours) + 1
+    const startMs = new Date(params.periodStartUtc).getTime();
+    const endMs = new Date(params.periodEndUtc).getTime();
+    const durationHours = Math.max(1, Math.round((endMs - startMs) / (3600 * 1000)));
+    const expectedHourlyObservations = durationHours + 1;
 
+    const dataCompletenessPercentage =
+      Math.min(100, Math.round((params.validPairsCount / expectedHourlyObservations) * 1000) / 10);
+
+    // Strict 85.0% temporal completeness rule for SUITABLE
+    const hasSufficientCompleteness = dataCompletenessPercentage >= 85.0;
+    const hasSufficientObservations = params.validPairsCount >= CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS;
+    const hasSufficientTimeSpan = params.timeSpanDays >= CALIBRATION_REQUIREMENTS.MIN_SPAN_DAYS;
+
+    const coverageCheck = hasSufficientObservations && hasSufficientTimeSpan && hasSufficientCompleteness;
     const datumCheck = Boolean(params.stationVerticalDatum);
     const provenanceCheck = !params.hasSimulatedOrInvalidData;
 
-    if (params.validPairsCount < CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS) {
+    if (!hasSufficientObservations) {
       reasons.push(
         `Observation count (${params.validPairsCount}) is below standard minimum threshold (${CALIBRATION_REQUIREMENTS.MIN_OBSERVATIONS} hourly pairs).`
       );
     }
 
-    if (params.timeSpanDays < CALIBRATION_REQUIREMENTS.MIN_SPAN_DAYS) {
+    if (!hasSufficientTimeSpan) {
       reasons.push(
         `Time series duration (${params.timeSpanDays} days) is less than the required synodic month (${CALIBRATION_REQUIREMENTS.MIN_SPAN_DAYS} days).`
+      );
+    }
+
+    if (!hasSufficientCompleteness) {
+      reasons.push(
+        `Temporal grid completeness (${dataCompletenessPercentage}%) is below the minimum required threshold of 85.0% for SUITABLE classification.`
       );
     }
 
@@ -250,20 +346,33 @@ export class EmpiricalValidationEngine {
       reasons.push('Station vertical datum is unvalidated or missing.');
     }
 
+    if (params.datumVerificationStatus !== 'INDEPENDENTLY_VERIFIED') {
+      reasons.push(
+        `Vertical datum is '${params.datumVerificationStatus}' but lacks independent physical benchmark survey verification.`
+      );
+    }
+
     if (!provenanceCheck) {
-      reasons.push('Dataset contained excluded pairs due to provenance or format discrepancies.');
+      reasons.push('Dataset contained excluded observations due to provenance, format, or threshold discrepancies.');
     }
 
     let classification: DataSuitabilityResult['classification'] = 'UNSUITABLE';
+
+    // Criteria for SUITABLE:
+    // - >= 720 observations
+    // - >= 29.53 days
+    // - completeness >= 85.0%
+    // - valid vertical datum
+    // - valid provenance (no excluded corrupted/synthetic rows)
     if (coverageCheck && datumCheck && provenanceCheck) {
       classification = 'SUITABLE';
-    } else if (params.validPairsCount >= 100 && params.timeSpanDays >= 5 && datumCheck) {
+    } else if (
+      params.validPairsCount >= 100 &&
+      params.timeSpanDays >= 5.0 &&
+      datumCheck
+    ) {
       classification = 'MARGINAL';
     }
-
-    const expectedHourlyPoints = Math.max(1, Math.round(params.timeSpanDays * 24));
-    const dataCompletenessPercentage =
-      Math.min(100, Math.round((params.validPairsCount / expectedHourlyPoints) * 1000) / 10);
 
     return {
       classification,
@@ -272,6 +381,7 @@ export class EmpiricalValidationEngine {
       dataCompletenessPercentage,
       coverageCheck,
       datumCheck,
+      datumVerificationStatus: params.datumVerificationStatus,
       provenanceCheck,
       reasons,
     };

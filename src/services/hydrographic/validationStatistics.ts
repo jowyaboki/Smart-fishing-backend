@@ -121,16 +121,46 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
 }
 
 /**
- * Matches observed tidal peaks with predicted tidal peaks within a temporal window (e.g. ±180 minutes).
- * Computes height error and timing error for high and low tides.
+ * Calculates peak validation metrics by comparing observed peaks and independently detected
+ * predicted peaks within a matching tolerance window (e.g. ±180 minutes).
+ *
+ * Avoids multiple associations (greedy 1-to-1 minimum time difference matching).
+ * Calculates height error: predicted - observed
+ * Calculates timing error: predictedTime - observedTime (in minutes)
+ * Evaluates whether observation sampling resolution allows scientifically defensible timing measurement.
  */
 export function calculatePeakValidationMetrics(
   observedPoints: DiscreteWaterLevelPoint[],
   predictedPoints: DiscreteWaterLevelPoint[],
-  maxMatchingWindowMinutes = 180
+  options: {
+    maxMatchingWindowMinutes?: number;
+    medianObsIntervalMinutes?: number;
+  } = {}
 ): PeakValidationMetrics {
+  const maxMatchingWindowMinutes = options.maxMatchingWindowMinutes ?? 180;
   const observedExtrema = detectLocalExtrema(observedPoints);
   const predictedExtrema = detectLocalExtrema(predictedPoints);
+
+  // Compute observed sampling interval if not provided
+  let samplingIntervalMinutes = options.medianObsIntervalMinutes ?? 60;
+  if (observedPoints.length >= 2 && !options.medianObsIntervalMinutes) {
+    const diffs: number[] = [];
+    const sortedObs = [...observedPoints].sort((a, b) => a.timeMs - b.timeMs);
+    for (let i = 1; i < Math.min(sortedObs.length, 50); i++) {
+      diffs.push((sortedObs[i].timeMs - sortedObs[i - 1].timeMs) / (60 * 1000));
+    }
+    diffs.sort((a, b) => a - b);
+    samplingIntervalMinutes = diffs[Math.floor(diffs.length / 2)] || 60;
+  }
+
+  // Scientifically defensible timing resolution:
+  // For semi-diurnal tides with gentle curvature near slack water, discrete observation
+  // sampling interval must be <= 15 minutes to resolve peak timing within standard hydrographic uncertainty (±10 min).
+  // Hourly data (60 min) introduces inherent discretisation uncertainty of up to ±30 minutes.
+  const isTimingResolutionScientificallyDefensible = samplingIntervalMinutes <= 15;
+  const timingResolutionDisclaimer = isTimingResolutionScientificallyDefensible
+    ? undefined
+    : `Observation temporal resolution (${samplingIntervalMinutes}m) exceeds recommended threshold (<=15m). Peak timing errors reflect discrete sampling quantization rather than true harmonic model phase divergence.`;
 
   const matchedPeaks: MatchedTidalPeak[] = [];
   const maxWindowMs = maxMatchingWindowMinutes * 60 * 1000;
@@ -179,15 +209,25 @@ export function calculatePeakValidationMetrics(
     }
   }
 
+  const unmatchedObservedPeaks = observedExtrema.length - matchedPeaks.length;
+  const unmatchedPredictedPeaks = predictedExtrema.length - matchedPeaks.length;
+
   if (matchedPeaks.length === 0) {
     return {
-      totalPeaksDetected: observedExtrema.length,
+      totalPeaksDetected: observedExtrema.length + predictedExtrema.length,
+      observedPeaksDetected: observedExtrema.length,
+      predictedPeaksDetected: predictedExtrema.length,
       highTidePeaksMatched: 0,
       lowTidePeaksMatched: 0,
+      unmatchedObservedPeaks,
+      unmatchedPredictedPeaks,
       meanPeakHeightErrorMeters: 0,
       peakHeightRmseMeters: 0,
       meanPeakTimingErrorMinutes: 0,
       peakTimingRmseMinutes: 0,
+      observationSamplingIntervalMinutes: Math.round(samplingIntervalMinutes * 10) / 10,
+      isTimingResolutionScientificallyDefensible,
+      timingResolutionDisclaimer,
       matchedPeaks: [],
     };
   }
@@ -211,13 +251,20 @@ export function calculatePeakValidationMetrics(
   const timingRmse = Math.sqrt(sumTimingSqError / n);
 
   return {
-    totalPeaksDetected: observedExtrema.length,
+    totalPeaksDetected: observedExtrema.length + predictedExtrema.length,
+    observedPeaksDetected: observedExtrema.length,
+    predictedPeaksDetected: predictedExtrema.length,
     highTidePeaksMatched: highMatchedCount,
     lowTidePeaksMatched: lowMatchedCount,
+    unmatchedObservedPeaks,
+    unmatchedPredictedPeaks,
     meanPeakHeightErrorMeters: Math.round(meanHeightError * 10000) / 10000,
     peakHeightRmseMeters: Math.round(heightRmse * 10000) / 10000,
     meanPeakTimingErrorMinutes: Math.round(meanTimingError * 100) / 100,
     peakTimingRmseMinutes: Math.round(timingRmse * 100) / 100,
+    observationSamplingIntervalMinutes: Math.round(samplingIntervalMinutes * 10) / 10,
+    isTimingResolutionScientificallyDefensible,
+    timingResolutionDisclaimer,
     matchedPeaks,
   };
 }

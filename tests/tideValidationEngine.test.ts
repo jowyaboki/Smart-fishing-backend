@@ -4,12 +4,10 @@ import request from 'supertest';
 import { createApp } from '../src/app';
 import { setDatabaseForTesting, closeDatabase } from '../src/data/database';
 import { HydrographicRepository } from '../src/data/hydrographicRepository';
-import { HydrographicService } from '../src/services/hydrographicService';
 import { EmpiricalValidationEngine } from '../src/services/hydrographic/empiricalValidationService';
 import {
   calculatePeakValidationMetrics,
   calculateStatisticalMetrics,
-  detectLocalExtrema,
   DiscreteWaterLevelPoint,
 } from '../src/services/hydrographic/validationStatistics';
 import { ValidationObservationPair } from '../src/domain/tideValidationModels';
@@ -141,7 +139,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       const stats = calculateStatisticalMetrics(opposingPairs);
       // Bias cancels to 0
       expect(stats.biasMeters).toBe(0);
-      // MAE and RMSE must reflect genuine magnitude of error
+      // MAE and RMSE reflect true magnitude of errors
       expect(stats.maeMeters).toBe(1.0);
       expect(stats.rmseMeters).toBe(1.0);
       expect(stats.standardDeviationMeters).toBe(1.0);
@@ -153,49 +151,74 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       );
     });
 
-    it('detects tidal extrema peaks and calculates peak height & timing errors', () => {
-      // 5-point discrete series: Low -> Rising -> High -> Falling -> Low
+    it('detects tidal extrema peaks on independent predictive series and measures height & timing errors', () => {
+      // Observed discrete points (sampled every 10 min, resolution <= 15m)
       const t0 = new Date('2026-11-08T00:00:00Z').getTime();
       const obsPoints: DiscreteWaterLevelPoint[] = [
         { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.2 },
-        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: t0 + 3600000, heightMeters: 1.0 }, // Local Low
-        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 2.5 },
-        { timestampUtc: '2026-11-08T03:00:00Z', timeMs: t0 + 10800000, heightMeters: 3.2 }, // Local High
-        { timestampUtc: '2026-11-08T04:00:00Z', timeMs: t0 + 14400000, heightMeters: 2.1 },
+        { timestampUtc: '2026-11-08T00:10:00Z', timeMs: t0 + 600000, heightMeters: 1.0 }, // Observed Low
+        { timestampUtc: '2026-11-08T00:20:00Z', timeMs: t0 + 1200000, heightMeters: 1.5 },
+        { timestampUtc: '2026-11-08T00:30:00Z', timeMs: t0 + 1800000, heightMeters: 2.5 },
+        { timestampUtc: '2026-11-08T00:40:00Z', timeMs: t0 + 2400000, heightMeters: 3.2 }, // Observed High
+        { timestampUtc: '2026-11-08T00:50:00Z', timeMs: t0 + 3000000, heightMeters: 2.1 },
       ];
 
+      // Independent continuous predicted points
       const predPoints: DiscreteWaterLevelPoint[] = [
         { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.3 },
-        { timestampUtc: '2026-11-08T01:10:00Z', timeMs: t0 + 3600000 + 600000, heightMeters: 0.9 }, // Local Low (+10 mins, -0.1m)
-        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 2.6 },
-        { timestampUtc: '2026-11-08T03:15:00Z', timeMs: t0 + 10800000 + 900000, heightMeters: 3.4 }, // Local High (+15 mins, +0.2m)
-        { timestampUtc: '2026-11-08T04:00:00Z', timeMs: t0 + 14400000, heightMeters: 2.0 },
+        { timestampUtc: '2026-11-08T00:15:00Z', timeMs: t0 + 900000, heightMeters: 0.9 }, // Predicted Low (+5 mins, -0.1m)
+        { timestampUtc: '2026-11-08T00:30:00Z', timeMs: t0 + 1800000, heightMeters: 2.6 },
+        { timestampUtc: '2026-11-08T00:45:00Z', timeMs: t0 + 2700000, heightMeters: 3.4 }, // Predicted High (+5 mins, +0.2m)
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: t0 + 3600000, heightMeters: 2.0 },
       ];
 
-      const peakMetrics = calculatePeakValidationMetrics(obsPoints, predPoints, 120);
+      const peakMetrics = calculatePeakValidationMetrics(obsPoints, predPoints, {
+        maxMatchingWindowMinutes: 120,
+        medianObsIntervalMinutes: 10,
+      });
 
-      expect(peakMetrics.totalPeaksDetected).toBe(2);
+      expect(peakMetrics.observedPeaksDetected).toBe(2);
+      expect(peakMetrics.predictedPeaksDetected).toBe(2);
       expect(peakMetrics.highTidePeaksMatched).toBe(1);
       expect(peakMetrics.lowTidePeaksMatched).toBe(1);
-      expect(peakMetrics.matchedPeaks.length).toBe(2);
+      expect(peakMetrics.unmatchedObservedPeaks).toBe(0);
+      expect(peakMetrics.unmatchedPredictedPeaks).toBe(0);
+      expect(peakMetrics.isTimingResolutionScientificallyDefensible).toBe(true);
+      expect(peakMetrics.timingResolutionDisclaimer).toBeUndefined();
 
-      // Low tide match: height diff = 0.9 - 1.0 = -0.1m, timing diff = +10 min
+      // Check low tide match
       const lowMatch = peakMetrics.matchedPeaks.find((p) => p.type === 'Low');
       expect(lowMatch).toBeDefined();
-      expect(lowMatch?.heightErrorMeters).toBeCloseTo(-0.1, 3);
-      expect(lowMatch?.timingErrorMinutes).toBe(10);
+      expect(lowMatch?.heightErrorMeters).toBeCloseTo(-0.1, 4);
+      expect(lowMatch?.timingErrorMinutes).toBe(5);
 
-      // High tide match: height diff = 3.4 - 3.2 = +0.2m, timing diff = +15 min
+      // Check high tide match
       const highMatch = peakMetrics.matchedPeaks.find((p) => p.type === 'High');
       expect(highMatch).toBeDefined();
-      expect(highMatch?.heightErrorMeters).toBeCloseTo(0.2, 3);
-      expect(highMatch?.timingErrorMinutes).toBe(15);
+      expect(highMatch?.heightErrorMeters).toBeCloseTo(0.2, 4);
+      expect(highMatch?.timingErrorMinutes).toBe(5);
+    });
 
-      // Averages:
-      // mean height err = (-0.1 + 0.2) / 2 = 0.05m
-      expect(peakMetrics.meanPeakHeightErrorMeters).toBe(0.05);
-      // mean timing err = (10 + 15) / 2 = 12.5 min
-      expect(peakMetrics.meanPeakTimingErrorMinutes).toBe(12.5);
+    it('warns when observation resolution is too coarse for defensible peak timing', () => {
+      const t0 = new Date('2026-11-08T00:00:00Z').getTime();
+      // Hourly sampling (60 min)
+      const obsPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.2 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: t0 + 3600000, heightMeters: 3.2 },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 1.5 },
+      ];
+      const predPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.2 },
+        { timestampUtc: '2026-11-08T01:10:00Z', timeMs: t0 + 4200000, heightMeters: 3.3 },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 1.4 },
+      ];
+
+      const metrics = calculatePeakValidationMetrics(obsPoints, predPoints, {
+        medianObsIntervalMinutes: 60,
+      });
+
+      expect(metrics.isTimingResolutionScientificallyDefensible).toBe(false);
+      expect(metrics.timingResolutionDisclaimer).toContain('exceeds recommended threshold');
     });
   });
 
@@ -238,7 +261,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(retrieved?.suitability.classification).toBe('UNSUITABLE');
     });
 
-    it('rejects datum mismatch, incomplete provenance, duplicates, and out-of-bounds water levels', async () => {
+    it('distinguishes explicit exclusion categories (DATUM_MISMATCH, INVALID_PROVENANCE, OUT_OF_BOUNDS, INVALID_COORDINATES, INVALID_UNIT)', async () => {
       const station = repo.getStation('casablanca-port');
       expect(station?.verticalDatum).toBe('ZH');
 
@@ -264,7 +287,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             isSimulatedFallback: false,
           },
         },
-        // 2. Vertical Datum Mismatch (LAT instead of ZH)
+        // 2. Datum Mismatch (LAT instead of ZH)
         {
           id: 'obs-invalid-datum',
           stationId: 'casablanca-port',
@@ -285,7 +308,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             isSimulatedFallback: false,
           },
         },
-        // 3. Incomplete/Simulated Provenance (isSimulatedFallback = true or tier = simulated)
+        // 3. Simulated Provenance (isSimulatedFallback = true)
         {
           id: 'obs-simulated-prov',
           stationId: 'casablanca-port',
@@ -327,6 +350,27 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             isSimulatedFallback: false,
           },
         },
+        // 5. Incompatible Coordinates (> 0.1 degree away from station)
+        {
+          id: 'obs-bad-coords',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T10:00:00.000Z',
+          waterLevelMeters: 2.5,
+          verticalDatum: 'ZH',
+          rawValue: 2.5,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T10:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 35.8, longitude: -5.5 }, // Tanger Med coordinates instead of Casablanca!
+            units: { waterLevel: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
       ];
 
       repo.saveObservationsBatch(observations);
@@ -335,10 +379,11 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
-      expect(run.excludedCount).toBe(3);
-      expect(run.exclusionReasons.datumMismatch).toBe(1);
-      expect(run.exclusionReasons.invalidProvenance).toBe(1);
-      expect(run.exclusionReasons.outOfBoundsWaterLevel).toBe(1);
+      expect(run.excludedCount).toBe(4);
+      expect(run.exclusionReasons.DATUM_MISMATCH).toBe(1);
+      expect(run.exclusionReasons.INVALID_PROVENANCE).toBe(1);
+      expect(run.exclusionReasons.OUT_OF_BOUNDS).toBe(1);
+      expect(run.exclusionReasons.INVALID_COORDINATES).toBe(1);
 
       // Only the single valid observation was retained
       expect(run.suitability.observationCount).toBe(1);
@@ -347,20 +392,28 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.status).toBe('NOT_VERIFIED');
     });
 
-    it('evaluates temporal coverage and data suitability correctly for insufficient data', async () => {
-      // 5 observations over 5 hours (far below 720 observations & 29.53 days)
-      const baseMs = new Date('2026-11-01T00:00:00Z').getTime();
+    it('enforces strict 85.0% completeness rule: 84.9% completeness is NOT SUITABLE', async () => {
+      // Create a 30-day window (720 hours expected)
+      // 720 * 0.849 = 611 observations -> 84.9% completeness
+      const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
       const obsBatch: HydrographicObservation[] = [];
 
-      for (let i = 0; i < 5; i++) {
-        const timeIso = new Date(baseMs + i * 3600000).toISOString();
+      // 611 observations spaced over 720 hours (has sufficient count 611? Wait, need 720 observations AND 85% completeness)
+      // Suppose we have 720 observations over 848 hours (35.33 days):
+      // Completeness = 720 / 848 = 84.9%
+      const totalHours = 848;
+      const obsCount = 720;
+      const stepMs = Math.floor((totalHours * 3600000) / obsCount);
+
+      for (let i = 0; i < obsCount; i++) {
+        const timeIso = new Date(baseMs + i * stepMs).toISOString();
         obsBatch.push({
-          id: `obs-seq-${i}`,
+          id: `obs-849-${i}`,
           stationId: 'casablanca-port',
           timestampUtc: timeIso,
-          waterLevelMeters: 2.0 + Math.sin(i),
+          waterLevelMeters: 2.1,
           verticalDatum: 'ZH',
-          rawValue: 2.0 + Math.sin(i),
+          rawValue: 2.1,
           rawUnit: 'm',
           qualityTier: 'observed',
           dataStatus: 'observation',
@@ -382,22 +435,21 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
-      expect(run.suitability.classification).toBe('UNSUITABLE');
+      expect(run.suitability.dataCompletenessPercentage).toBeLessThan(85.0);
+      expect(run.suitability.classification).not.toBe('SUITABLE');
       expect(run.suitability.coverageCheck).toBe(false);
-      expect(run.suitability.reasons.length).toBeGreaterThan(0);
-      expect(run.suitability.observationCount).toBe(5);
-      expect(run.statistics?.totalPairs).toBe(5);
+      expect(run.suitability.reasons.some((r) => r.includes('85.0%'))).toBe(true);
     });
 
-    it('evaluates suitability as MARGINAL when intermediate series provided', async () => {
-      // 150 observations over 6.2 days (>= 100 observations & >= 5 days)
-      const baseMs = new Date('2026-11-01T00:00:00Z').getTime();
+    it('satisfies SUITABLE criteria when >= 720 observations, >= 29.53 days, and completeness >= 85.0%', async () => {
+      // 721 consecutive hourly observations spanning 30 days (completeness = 100%)
+      const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
       const obsBatch: HydrographicObservation[] = [];
 
-      for (let i = 0; i < 150; i++) {
+      for (let i = 0; i < 721; i++) {
         const timeIso = new Date(baseMs + i * 3600000).toISOString();
         obsBatch.push({
-          id: `obs-marginal-${i}`,
+          id: `obs-suitable-${i}`,
           stationId: 'casablanca-port',
           timestampUtc: timeIso,
           waterLevelMeters: 2.1 + 0.5 * Math.sin((i * 2 * Math.PI) / 12.42),
@@ -424,11 +476,51 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
-      expect(run.suitability.classification).toBe('MARGINAL');
-      expect(run.statistics?.totalPairs).toBe(150);
-      expect(run.peakMetrics?.highTidePeaksMatched).toBeGreaterThan(0);
+      expect(run.suitability.observationCount).toBe(721);
+      expect(run.suitability.timeSpanDays).toBeGreaterThanOrEqual(29.53);
+      expect(run.suitability.dataCompletenessPercentage).toBeGreaterThanOrEqual(85.0);
+      expect(run.suitability.coverageCheck).toBe(true);
+      expect(run.suitability.classification).toBe('SUITABLE');
+      expect(run.suitability.datumVerificationStatus).toBe('SOURCE_DECLARED');
+      // Production safeguards: status strictly NOT_VERIFIED, isCalibrationEnabled strictly false
       expect(run.status).toBe('NOT_VERIFIED');
       expect(run.isCalibrationEnabled).toBe(false);
+    });
+
+    it('rejects station validation when requireIndependentDatumVerification is true but benchmark is unverified', async () => {
+      // Station casablanca-port is configured with datum ZH but metadata isDatumIndependentlyVerified is not set
+      const baseMs = new Date('2026-11-01T00:00:00Z').getTime();
+      const obs: HydrographicObservation = {
+        id: 'obs-unverified-datum',
+        stationId: 'casablanca-port',
+        timestampUtc: new Date(baseMs).toISOString(),
+        waterLevelMeters: 2.1,
+        verticalDatum: 'ZH',
+        rawValue: 2.1,
+        rawUnit: 'm',
+        qualityTier: 'observed',
+        dataStatus: 'observation',
+        provenance: {
+          provider: 'ANP',
+          retrievedAt: new Date(baseMs).toISOString(),
+          quality: 'observed',
+          status: 'observation',
+          coordinates: { latitude: 33.6, longitude: -7.6 },
+          units: { waterLevel: 'm' },
+          isSimulatedFallback: false,
+        },
+      };
+
+      repo.saveObservationsBatch([obs]);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+        requireIndependentDatumVerification: true,
+      });
+
+      expect(run.excludedCount).toBe(1);
+      expect(run.exclusionReasons.DATUM_NOT_VERIFIED).toBe(1);
+      expect(run.suitability.observationCount).toBe(0);
     });
   });
 
@@ -476,6 +568,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(res.body.stationId).toBe('casablanca-port');
       expect(res.body.status).toBe('NOT_VERIFIED');
       expect(res.body.isCalibrationEnabled).toBe(false);
+      expect(res.body.exclusionReasons.DATUM_MISMATCH).toBeDefined();
 
       const runId = res.body.id;
 

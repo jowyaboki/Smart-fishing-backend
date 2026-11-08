@@ -16,13 +16,39 @@ export type EmpiricalValidationStatus =
 export type DataSuitabilityClassification = 'SUITABLE' | 'MARGINAL' | 'UNSUITABLE';
 
 /**
+ * Vertical Datum verification status
+ * CONFIGURED: datum populated from station configuration metadata
+ * SOURCE_DECLARED: datum declared by data provider/source header
+ * INDEPENDENTLY_VERIFIED: datum confirmed by certified physical hydrographic benchmark telemetry
+ */
+export type DatumVerificationStatus =
+  | 'CONFIGURED'
+  | 'SOURCE_DECLARED'
+  | 'INDEPENDENTLY_VERIFIED';
+
+/**
+ * Explicit exclusion breakdown categories
+ */
+export interface ValidationExclusionCounters {
+  DATUM_MISMATCH: number;
+  DATUM_NOT_VERIFIED: number;
+  INVALID_PROVENANCE: number;
+  INVALID_UNIT: number;
+  INVALID_COORDINATES: number;
+  INVALID_TIMESTAMP: number;
+  DUPLICATE_TIMESTAMP: number;
+  OUT_OF_BOUNDS: number;
+  INSUFFICIENT_COVERAGE: number;
+}
+
+/**
  * Represents an aligned comparison between an empirical observation and an astronomical prediction
  */
 export interface ValidationObservationPair {
   timestampUtc: string;
   observedWaterLevelMeters: number;
   predictedWaterLevelMeters: number;
-  residualMeters: number; // predicted - observed (or observed - predicted, consistently: predicted - observed gives model bias)
+  residualMeters: number; // predicted - observed (Convention: predicted - observed gives model bias)
   verticalDatum: VerticalDatum;
   qualityTier: DataQualityTier;
 }
@@ -58,12 +84,19 @@ export interface MatchedTidalPeak {
  */
 export interface PeakValidationMetrics {
   totalPeaksDetected: number;
+  observedPeaksDetected: number;
+  predictedPeaksDetected: number;
   highTidePeaksMatched: number;
   lowTidePeaksMatched: number;
+  unmatchedObservedPeaks: number;
+  unmatchedPredictedPeaks: number;
   meanPeakHeightErrorMeters: number;
   peakHeightRmseMeters: number;
   meanPeakTimingErrorMinutes: number;
   peakTimingRmseMinutes: number;
+  observationSamplingIntervalMinutes: number;
+  isTimingResolutionScientificallyDefensible: boolean;
+  timingResolutionDisclaimer?: string;
   matchedPeaks: MatchedTidalPeak[];
 }
 
@@ -77,6 +110,7 @@ export interface DataSuitabilityResult {
   dataCompletenessPercentage: number;
   coverageCheck: boolean;
   datumCheck: boolean;
+  datumVerificationStatus: DatumVerificationStatus;
   provenanceCheck: boolean;
   reasons: string[];
 }
@@ -89,6 +123,8 @@ export interface TideValidationOptions {
   startDateUtc?: string;
   endDateUtc?: string;
   allowMarginalData?: boolean;
+  predictionResolutionMinutes?: number; // Configurable independent predicted series resolution (default 10 mins)
+  requireIndependentDatumVerification?: boolean;
 }
 
 /**
@@ -106,12 +142,14 @@ export interface TideValidationRun {
   statistics: StatisticalMetrics | null;
   peakMetrics: PeakValidationMetrics | null;
   excludedCount: number;
-  exclusionReasons: Record<string, number>;
+  exclusionReasons: ValidationExclusionCounters;
   isCalibrationEnabled: false; // Safeguard strictly locked to false
   metadata: {
     engineVersion: string;
     predictionProviderId: string;
     verticalDatum: VerticalDatum;
+    datumVerificationStatus: DatumVerificationStatus;
+    predictionResolutionMinutes: number;
     notes: string;
   };
 }
