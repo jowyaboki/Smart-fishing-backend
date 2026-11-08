@@ -27,6 +27,17 @@ export type DatumVerificationStatus =
   | 'INDEPENDENTLY_VERIFIED';
 
 /**
+ * Traceable proof required for INDEPENDENTLY_VERIFIED promotion
+ */
+export interface DatumVerificationBenchmarkProof {
+  benchmarkCertificateId: string;
+  surveyReference: string;
+  verificationAuthority: string;
+  verificationDateUtc: string;
+  verificationDocumentReference: string;
+}
+
+/**
  * Explicit exclusion breakdown categories
  */
 export interface ValidationExclusionCounters {
@@ -114,6 +125,7 @@ export interface DataSuitabilityResult {
   coverageCheck: boolean;
   datumCheck: boolean;
   datumVerificationStatus: DatumVerificationStatus;
+  benchmarkProof?: DatumVerificationBenchmarkProof;
   provenanceCheck: boolean;
   reasons: string[];
 }
@@ -153,6 +165,7 @@ export interface TideValidationRun {
     predictionProviderId: string;
     verticalDatum: VerticalDatum;
     datumVerificationStatus: DatumVerificationStatus;
+    benchmarkProof?: DatumVerificationBenchmarkProof;
     predictionResolutionMinutes: number;
     notes: string;
   };

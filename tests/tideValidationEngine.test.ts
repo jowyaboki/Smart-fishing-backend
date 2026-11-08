@@ -10,7 +10,10 @@ import {
   calculateStatisticalMetrics,
   DiscreteWaterLevelPoint,
 } from '../src/services/hydrographic/validationStatistics';
-import { ValidationObservationPair } from '../src/domain/tideValidationModels';
+import {
+  DatumVerificationBenchmarkProof,
+  ValidationObservationPair,
+} from '../src/domain/tideValidationModels';
 import { HydrographicObservation } from '../src/domain/hydrographicModels';
 
 describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
@@ -243,7 +246,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -264,7 +267,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -285,7 +288,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'simulated',
             status: 'forecast',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: true,
           },
         },
@@ -306,7 +309,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -327,7 +330,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 35.8, longitude: -5.5 }, // Tanger Med coordinates instead of Casablanca
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -348,7 +351,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'knots' },
             isSimulatedFallback: false,
           },
         },
@@ -372,8 +375,207 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.status).toBe('NOT_VERIFIED');
     });
 
+    it('rigorously tests all supported units (m, cm, mm, ft) and flags inconsistent conversion as INVALID_UNIT', async () => {
+      const observations: HydrographicObservation[] = [
+        // 1. Valid cm conversion: 250 cm -> 2.5 m
+        {
+          id: 'obs-cm-valid',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T01:00:00.000Z',
+          waterLevelMeters: 2.5,
+          verticalDatum: 'ZH',
+          rawValue: 250,
+          rawUnit: 'cm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T01:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'cm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 2. Valid mm conversion: 2800 mm -> 2.8 m
+        {
+          id: 'obs-mm-valid',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T02:00:00.000Z',
+          waterLevelMeters: 2.8,
+          verticalDatum: 'ZH',
+          rawValue: 2800,
+          rawUnit: 'mm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T02:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'mm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 3. Valid ft conversion: 10 ft -> 3.048 m
+        {
+          id: 'obs-ft-valid',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T03:00:00.000Z',
+          waterLevelMeters: 3.048,
+          verticalDatum: 'ZH',
+          rawValue: 10,
+          rawUnit: 'ft',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T03:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'ft' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 4. Inconsistent mathematical conversion: rawValue 250 cm but waterLevelMeters = 1.0 (should be 2.5)
+        {
+          id: 'obs-bad-conversion',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T04:00:00.000Z',
+          waterLevelMeters: 1.0,
+          verticalDatum: 'ZH',
+          rawValue: 250,
+          rawUnit: 'cm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T04:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'cm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 5. Contradictory provenance unit: rawUnit is 'm' but provenance declares rawUnit 'ft'
+        {
+          id: 'obs-contradictory-unit',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T05:00:00.000Z',
+          waterLevelMeters: 2.5,
+          verticalDatum: 'ZH',
+          rawValue: 2.5,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T05:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'ft' }, // contradiction!
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+
+      repo.saveObservationsBatch(observations);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      // 3 valid conversions passed, 2 bad unit conversions excluded as INVALID_UNIT
+      expect(run.exclusionReasons.INVALID_UNIT).toBe(2);
+      expect(run.suitability.observationCount).toBe(3);
+    });
+
+    it('rejects promotion to INDEPENDENTLY_VERIFIED when benchmark proof is missing or incomplete (simple boolean false proof rejected)', async () => {
+      // Station casablanca-port with only isDatumIndependentlyVerified: true (missing certificate ID, survey ref, etc.)
+      const station = repo.getStation('casablanca-port');
+      if (station) {
+        station.metadata = {
+          ...station.metadata,
+          isDatumIndependentlyVerified: true, // Incomplete boolean only!
+        };
+        repo.saveStation(station);
+      }
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      // Should not promote to INDEPENDENTLY_VERIFIED because proof is incomplete!
+      expect(run.suitability.datumVerificationStatus).not.toBe('INDEPENDENTLY_VERIFIED');
+      expect(run.suitability.datumVerificationStatus).toBe('CONFIGURED');
+      expect(run.suitability.classification).toBe('UNSUITABLE');
+    });
+
+    it('awards INDEPENDENTLY_VERIFIED only when full traceable benchmark proof is documented', async () => {
+      const fullProof: DatumVerificationBenchmarkProof = {
+        benchmarkCertificateId: 'BM-CERT-ANP-2026-0042',
+        surveyReference: 'SURV-ATLANTIC-SHOM-2026',
+        verificationAuthority: 'Agence Nationale des Ports (ANP)',
+        verificationDateUtc: '2026-05-15T00:00:00Z',
+        verificationDocumentReference: 'DOC-ANP-HYDRO-ZH-042',
+      };
+
+      const station = repo.getStation('casablanca-port');
+      if (station) {
+        station.metadata = {
+          ...station.metadata,
+          datumBenchmarkProof: fullProof,
+        };
+        repo.saveStation(station);
+      }
+
+      // 721 hourly observations spanning 30 days
+      const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
+      const obsBatch: HydrographicObservation[] = [];
+
+      for (let i = 0; i < 721; i++) {
+        const timeIso = new Date(baseMs + i * 3600000).toISOString();
+        obsBatch.push({
+          id: `obs-cert-${i}`,
+          stationId: 'casablanca-port',
+          timestampUtc: timeIso,
+          waterLevelMeters: 2.1 + 0.5 * Math.sin((i * 2 * Math.PI) / 12.42),
+          verticalDatum: 'ZH',
+          rawValue: 2.1 + 0.5 * Math.sin((i * 2 * Math.PI) / 12.42),
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: timeIso,
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        });
+      }
+
+      repo.saveObservationsBatch(obsBatch);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      expect(run.suitability.datumVerificationStatus).toBe('INDEPENDENTLY_VERIFIED');
+      expect(run.suitability.benchmarkProof?.benchmarkCertificateId).toBe('BM-CERT-ANP-2026-0042');
+      expect(run.suitability.classification).toBe('SUITABLE');
+      expect(run.status).toBe('NOT_VERIFIED');
+      expect(run.isCalibrationEnabled).toBe(false);
+    });
+
     it('blocks false positive SUITABLE: SOURCE_DECLARED with 100% completeness can NEVER be SUITABLE', async () => {
-      // 721 hourly observations spanning 30 days (100% completeness, >= 720 obs, >= 29.53 days)
       const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
       const obsBatch: HydrographicObservation[] = [];
 
@@ -395,7 +597,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         });
@@ -410,95 +612,31 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.datumVerificationStatus).toBe('SOURCE_DECLARED');
       expect(run.suitability.dataCompletenessPercentage).toBeGreaterThanOrEqual(85.0);
       expect(run.suitability.observationCount).toBe(721);
-      // Because datum is SOURCE_DECLARED (not INDEPENDENTLY_VERIFIED), it MUST NOT be SUITABLE!
+      // Because datum lacks traceable benchmark proof, it MUST NOT be SUITABLE!
       expect(run.suitability.classification).toBe('MARGINAL');
       expect(run.suitability.reasons.some((r) => r.includes('lacks independent physical hydrographic benchmark'))).toBe(true);
     });
 
-    it('blocks false positive SUITABLE: CONFIGURED datum can NEVER be SUITABLE', async () => {
-      const station = repo.getStation('casablanca-port');
-      expect(station?.verticalDatum).toBe('ZH');
-      // Station metadata does not have isDatumIndependentlyVerified
-      expect((station?.metadata as any)?.isDatumIndependentlyVerified).toBeFalsy();
-
-      const run = await validationEngine.validateStation({
-        stationId: 'casablanca-port',
-      });
-
-      expect(run.suitability.datumVerificationStatus).toBe('CONFIGURED');
-      expect(run.suitability.classification).toBe('UNSUITABLE');
-    });
-
-    it('awards SUITABLE only when datum is INDEPENDENTLY_VERIFIED and all criteria satisfied', async () => {
-      // Mark station as independently verified by certified benchmark survey
-      const station = repo.getStation('casablanca-port');
-      if (station) {
-        station.metadata = {
-          ...station.metadata,
-          isDatumIndependentlyVerified: true,
-          benchmarkSurveyRef: 'SHOM-ANP-BM-2026-01',
-        };
-        repo.saveStation(station);
-      }
-
-      // 721 hourly observations spanning 30 days
-      const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
-      const obsBatch: HydrographicObservation[] = [];
-
-      for (let i = 0; i < 721; i++) {
-        const timeIso = new Date(baseMs + i * 3600000).toISOString();
-        obsBatch.push({
-          id: `obs-verified-${i}`,
-          stationId: 'casablanca-port',
-          timestampUtc: timeIso,
-          waterLevelMeters: 2.1 + 0.5 * Math.sin((i * 2 * Math.PI) / 12.42),
-          verticalDatum: 'ZH',
-          rawValue: 2.1 + 0.5 * Math.sin((i * 2 * Math.PI) / 12.42),
-          rawUnit: 'm',
-          qualityTier: 'observed',
-          dataStatus: 'observation',
-          provenance: {
-            provider: 'ANP',
-            retrievedAt: timeIso,
-            quality: 'observed',
-            status: 'observation',
-            coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
-            isSimulatedFallback: false,
-          },
-        });
-      }
-
-      repo.saveObservationsBatch(obsBatch);
-
-      const run = await validationEngine.validateStation({
-        stationId: 'casablanca-port',
-      });
-
-      expect(run.suitability.datumVerificationStatus).toBe('INDEPENDENTLY_VERIFIED');
-      expect(run.suitability.dataCompletenessPercentage).toBeGreaterThanOrEqual(85.0);
-      expect(run.suitability.coverageCheck).toBe(true);
-      expect(run.suitability.classification).toBe('SUITABLE');
-      expect(run.status).toBe('NOT_VERIFIED');
-      expect(run.isCalibrationEnabled).toBe(false);
-    });
-
     it('calculates true grid coverage: 720 observations clustered in 10 hours yields low coverage and is NOT SUITABLE', async () => {
-      // Mark station independently verified to isolate coverage check
+      const fullProof: DatumVerificationBenchmarkProof = {
+        benchmarkCertificateId: 'BM-CERT-ANP-2026-0042',
+        surveyReference: 'SURV-ATLANTIC-SHOM-2026',
+        verificationAuthority: 'ANP',
+        verificationDateUtc: '2026-05-15T00:00:00Z',
+        verificationDocumentReference: 'DOC-ANP-HYDRO-ZH-042',
+      };
+
       const station = repo.getStation('casablanca-port');
       if (station) {
-        station.metadata = { ...station.metadata, isDatumIndependentlyVerified: true };
+        station.metadata = { ...station.metadata, datumBenchmarkProof: fullProof };
         repo.saveStation(station);
       }
 
-      // Start date: 2026-10-01, End date: 2026-10-31 (30 days = ~720 hours)
-      // Clustered: 720 observations packed into the first 10 hours (e.g. 72 observations per hour)
       const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
       const endMs = new Date('2026-10-31T00:00:00Z').getTime();
       const obsBatch: HydrographicObservation[] = [];
 
       for (let i = 0; i < 720; i++) {
-        // spread across 10 hours: 10 * 3600000 = 36,000,000 ms
         const timeIso = new Date(baseMs + (i % 10) * 3600000 + Math.floor(i / 10) * 1000).toISOString();
         obsBatch.push({
           id: `obs-clustered-${i}`,
@@ -516,7 +654,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         });
@@ -530,7 +668,6 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         endDateUtc: new Date(endMs).toISOString(),
       });
 
-      // Expected hourly slots ~ 721, covered slots <= 10
       expect(run.suitability.expectedHourlySlots).toBeGreaterThan(700);
       expect(run.suitability.coveredHourlySlots).toBeLessThanOrEqual(10);
       expect(run.suitability.dataCompletenessPercentage).toBeLessThan(5.0);
@@ -539,15 +676,20 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
     });
 
     it('enforces strict 85.0% completeness rule: 84.9% covered slots is NOT SUITABLE, 85.0% is SUITABLE', async () => {
-      // Mark station independently verified to test boundary
+      const fullProof: DatumVerificationBenchmarkProof = {
+        benchmarkCertificateId: 'BM-CERT-ANP-2026-0042',
+        surveyReference: 'SURV-ATLANTIC-SHOM-2026',
+        verificationAuthority: 'ANP',
+        verificationDateUtc: '2026-05-15T00:00:00Z',
+        verificationDocumentReference: 'DOC-ANP-HYDRO-ZH-042',
+      };
+
       const station = repo.getStation('casablanca-port');
       if (station) {
-        station.metadata = { ...station.metadata, isDatumIndependentlyVerified: true };
+        station.metadata = { ...station.metadata, datumBenchmarkProof: fullProof };
         repo.saveStation(station);
       }
 
-      // Expected slots = 1000 hours
-      // 849 covered slots -> 84.9% completeness
       const baseMs = new Date('2026-10-01T00:00:00Z').getTime();
       const endMs = new Date(baseMs + 999 * 3600000).toISOString();
       const obsBatch849: HydrographicObservation[] = [];
@@ -570,7 +712,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         });
@@ -588,7 +730,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run849.suitability.classification).toBe('MARGINAL');
       expect(run849.suitability.coverageCheck).toBe(false);
 
-      // Now add 1 more observation to reach 850 / 1000 = 85.0% completeness
+      // Add 1 more observation to reach 850 / 1000 = 85.0% completeness
       const timeIso850 = new Date(baseMs + 849 * 3600000).toISOString();
       repo.saveObservationsBatch([
         {
@@ -607,7 +749,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -624,38 +766,20 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run850.suitability.classification).toBe('SUITABLE');
     });
 
-    it('correctly tracks hourly slots across UTC date boundaries and missing gaps', async () => {
-      // 23:00 on Day 1 to 02:00 on Day 2 (4 hours across midnight UTC)
-      // Omit 01:00 slot to test gap detection
-      const t23 = '2026-11-08T23:00:00.000Z';
-      const t00 = '2026-11-09T00:00:00.000Z';
-      const t02 = '2026-11-09T02:00:00.000Z';
+    it('correctly tracks hourly slots with tolerance boundary (±30m) and unaligned period start/end', async () => {
+      // Period from 10:15 to 13:45
+      // Expected slots: 10:00, 11:00, 12:00, 13:00 (4 slots)
+      // Observation 1: 10:30 (exactly +30 min from 10:00) -> should cover 10:00 slot
+      // Observation 2: 12:00 -> covers 12:00 slot
+      // Slots 11:00 and 13:00 missing -> 2 missing slots
+      const tStart = '2026-11-08T10:15:00.000Z';
+      const tEnd = '2026-11-08T13:45:00.000Z';
 
       const obsBatch: HydrographicObservation[] = [
         {
-          id: 'obs-t23',
+          id: 'obs-tol-1',
           stationId: 'casablanca-port',
-          timestampUtc: t23,
-          waterLevelMeters: 2.0,
-          verticalDatum: 'ZH',
-          rawValue: 2.0,
-          rawUnit: 'm',
-          qualityTier: 'observed',
-          dataStatus: 'observation',
-          provenance: {
-            provider: 'ANP',
-            retrievedAt: t23,
-            quality: 'observed',
-            status: 'observation',
-            coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
-            isSimulatedFallback: false,
-          },
-        },
-        {
-          id: 'obs-t00',
-          stationId: 'casablanca-port',
-          timestampUtc: t00,
+          timestampUtc: '2026-11-08T10:30:00.000Z',
           waterLevelMeters: 2.1,
           verticalDatum: 'ZH',
           rawValue: 2.1,
@@ -664,18 +788,18 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
           dataStatus: 'observation',
           provenance: {
             provider: 'ANP',
-            retrievedAt: t00,
+            retrievedAt: '2026-11-08T10:35:00Z',
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
         {
-          id: 'obs-t02',
+          id: 'obs-tol-2',
           stationId: 'casablanca-port',
-          timestampUtc: t02,
+          timestampUtc: '2026-11-08T12:00:00.000Z',
           waterLevelMeters: 2.2,
           verticalDatum: 'ZH',
           rawValue: 2.2,
@@ -684,11 +808,11 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
           dataStatus: 'observation',
           provenance: {
             provider: 'ANP',
-            retrievedAt: t02,
+            retrievedAt: '2026-11-08T12:05:00Z',
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -698,15 +822,16 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
 
       const run = await validationEngine.validateStation({
         stationId: 'casablanca-port',
-        startDateUtc: t23,
-        endDateUtc: t02,
+        startDateUtc: tStart,
+        endDateUtc: tEnd,
+        hourlySlotToleranceMinutes: 30,
       });
 
-      expect(run.suitability.expectedHourlySlots).toBe(4); // 23:00, 00:00, 01:00, 02:00
-      expect(run.suitability.coveredHourlySlots).toBe(3); // 23:00, 00:00, 02:00
-      expect(run.suitability.missingHourlySlots).toBe(1); // 01:00 missing
-      expect(run.suitability.dataCompletenessPercentage).toBe(75.0);
-      expect(run.exclusionReasons.INSUFFICIENT_COVERAGE).toBe(1);
+      expect(run.suitability.expectedHourlySlots).toBe(4);
+      expect(run.suitability.coveredHourlySlots).toBe(2);
+      expect(run.suitability.missingHourlySlots).toBe(2);
+      expect(run.suitability.dataCompletenessPercentage).toBe(50.0);
+      expect(run.exclusionReasons.INSUFFICIENT_COVERAGE).toBe(2);
     });
   });
 

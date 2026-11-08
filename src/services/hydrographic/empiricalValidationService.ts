@@ -7,6 +7,7 @@ import {
 } from '../../domain/hydrographicModels';
 import {
   DataSuitabilityResult,
+  DatumVerificationBenchmarkProof,
   DatumVerificationStatus,
   EmpiricalValidationStatus,
   TideValidationOptions,
@@ -20,6 +21,27 @@ import {
   calculateStatisticalMetrics,
   DiscreteWaterLevelPoint,
 } from './validationStatistics';
+
+/**
+ * Checks whether a benchmark proof object contains all 5 required traceable fields
+ */
+function isValidBenchmarkProof(proof: unknown): proof is DatumVerificationBenchmarkProof {
+  if (!proof || typeof proof !== 'object') return false;
+  const p = proof as Record<string, unknown>;
+  return (
+    typeof p.benchmarkCertificateId === 'string' &&
+    p.benchmarkCertificateId.trim().length > 0 &&
+    typeof p.surveyReference === 'string' &&
+    p.surveyReference.trim().length > 0 &&
+    typeof p.verificationAuthority === 'string' &&
+    p.verificationAuthority.trim().length > 0 &&
+    typeof p.verificationDateUtc === 'string' &&
+    p.verificationDateUtc.endsWith('Z') &&
+    !isNaN(new Date(p.verificationDateUtc).getTime()) &&
+    typeof p.verificationDocumentReference === 'string' &&
+    p.verificationDocumentReference.trim().length > 0
+  );
+}
 
 export class EmpiricalValidationEngine {
   private repo: HydrographicRepository;
@@ -74,6 +96,14 @@ export class EmpiricalValidationEngine {
 
     const seenTimestamps = new Set<string>();
 
+    // Determine datum verification proof from station metadata
+    const stationMeta = (station.metadata || {}) as Record<string, unknown>;
+    const rawProof = stationMeta.datumBenchmarkProof;
+    const hasValidProof = isValidBenchmarkProof(rawProof);
+    const benchmarkProof: DatumVerificationBenchmarkProof | undefined = hasValidProof
+      ? (rawProof as DatumVerificationBenchmarkProof)
+      : undefined;
+
     // 2. Validate observations with strict and granular exclusion classification
     for (const obs of observations) {
       // Timestamp format validation
@@ -107,15 +137,15 @@ export class EmpiricalValidationEngine {
 
       // Check vertical datum verification requirements
       if (options.requireIndependentDatumVerification) {
-        const isVerified = (station.metadata as any)?.isDatumIndependentlyVerified === true;
-        if (!isVerified) {
+        if (!hasValidProof) {
           exclusionReasons.DATUM_NOT_VERIFIED++;
           excludedCount++;
           continue;
         }
       }
 
-      // Unit check: raw unit must be supported
+      // Comprehensive Unit Consistency & Conversion Validation:
+      // Must check rawUnit, provenance units, and mathematical conversion to waterLevelMeters
       const rawUnitClean = obs.rawUnit?.trim().toLowerCase();
       if (!['m', 'cm', 'mm', 'ft'].includes(rawUnitClean)) {
         exclusionReasons.INVALID_UNIT++;
@@ -123,8 +153,48 @@ export class EmpiricalValidationEngine {
         continue;
       }
 
+      const prov = obs.provenance;
+      const provUnits = prov?.units;
+      if (!provUnits || typeof provUnits !== 'object') {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      // If provenance specifies waterLevel unit, it must be 'm' (standard normalized)
+      if (provUnits.waterLevel && provUnits.waterLevel !== 'm') {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      // If provenance specifies rawUnit, it must match observation rawUnit
+      if (provUnits.rawUnit && provUnits.rawUnit.trim().toLowerCase() !== rawUnitClean) {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      // Verify mathematical conversion from rawValue to waterLevelMeters within numerical tolerance
+      if (typeof obs.rawValue !== 'number' || isNaN(obs.rawValue) || typeof obs.waterLevelMeters !== 'number') {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
+      let expectedMeters = obs.rawValue;
+      if (rawUnitClean === 'cm') expectedMeters = obs.rawValue / 100;
+      else if (rawUnitClean === 'mm') expectedMeters = obs.rawValue / 1000;
+      else if (rawUnitClean === 'ft') expectedMeters = obs.rawValue * 0.3048;
+
+      if (Math.abs(expectedMeters - obs.waterLevelMeters) > 0.005) {
+        exclusionReasons.INVALID_UNIT++;
+        excludedCount++;
+        continue;
+      }
+
       // Coordinates validation: observation provenance coordinates must be numeric, in range, and match station within ~0.1 deg (~10km)
-      const provCoords = obs.provenance?.coordinates;
+      const provCoords = prov?.coordinates;
       if (
         !provCoords ||
         typeof provCoords.latitude !== 'number' ||
@@ -163,9 +233,7 @@ export class EmpiricalValidationEngine {
       }
 
       // Rigorous Provenance Validation:
-      // provider non-empty, retrievedAt valid UTC, units waterLevel consistent,
-      // qualityTier === observed, dataStatus === observation, no fallback/simulated
-      const prov = obs.provenance;
+      // provider non-empty, retrievedAt valid UTC, qualityTier === observed, dataStatus === observation, no fallback/simulated
       if (
         !prov ||
         !prov.provider ||
@@ -178,8 +246,7 @@ export class EmpiricalValidationEngine {
         obs.qualityTier !== 'observed' ||
         obs.dataStatus !== 'observation' ||
         prov.quality === 'simulated' ||
-        prov.isSimulatedFallback === true ||
-        (prov.units && prov.units.waterLevel && prov.units.waterLevel !== 'm')
+        prov.isSimulatedFallback === true
       ) {
         exclusionReasons.INVALID_PROVENANCE++;
         excludedCount++;
@@ -238,9 +305,9 @@ export class EmpiricalValidationEngine {
     // Datum verification status distinction:
     // CONFIGURED: datum populated from station configuration metadata
     // SOURCE_DECLARED: datum declared by data source
-    // INDEPENDENTLY_VERIFIED: confirmed by certified physical hydrographic benchmark survey
+    // INDEPENDENTLY_VERIFIED: confirmed by certified physical hydrographic benchmark survey (requires full valid proof)
     let datumVerificationStatus: DatumVerificationStatus = 'CONFIGURED';
-    if ((station.metadata as any)?.isDatumIndependentlyVerified === true) {
+    if (hasValidProof) {
       datumVerificationStatus = 'INDEPENDENTLY_VERIFIED';
     } else if (validPairs.length > 0 && validPairs[0].verticalDatum) {
       datumVerificationStatus = 'SOURCE_DECLARED';
@@ -249,6 +316,7 @@ export class EmpiricalValidationEngine {
     const suitability = this.evaluateSuitability({
       stationVerticalDatum: station.verticalDatum,
       datumVerificationStatus,
+      benchmarkProof,
       validPairs,
       timeSpanDays,
       hasSimulatedOrInvalidData: excludedCount > 0,
@@ -314,10 +382,11 @@ export class EmpiricalValidationEngine {
       exclusionReasons,
       isCalibrationEnabled: false, // Safeguard strictly locked to false
       metadata: {
-        engineVersion: '2.4.2',
+        engineVersion: '2.4.3',
         predictionProviderId: this.tideProvider.providerId,
         verticalDatum: station.verticalDatum,
         datumVerificationStatus,
+        benchmarkProof,
         predictionResolutionMinutes,
         notes:
           'Empirical tide validation run against persisted hydrographic observation telemetry. Automated harmonic calibration is permanently disabled.',
@@ -333,6 +402,7 @@ export class EmpiricalValidationEngine {
   private evaluateSuitability(params: {
     stationVerticalDatum: string;
     datumVerificationStatus: DatumVerificationStatus;
+    benchmarkProof?: DatumVerificationBenchmarkProof;
     validPairs: ValidationObservationPair[];
     timeSpanDays: number;
     hasSimulatedOrInvalidData: boolean;
@@ -441,7 +511,7 @@ export class EmpiricalValidationEngine {
 
     if (!isDatumIndependentlyVerified) {
       reasons.push(
-        `Vertical datum is '${params.datumVerificationStatus}' and lacks independent physical hydrographic benchmark verification. SUITABLE classification requires INDEPENDENTLY_VERIFIED datum.`
+        `Vertical datum is '${params.datumVerificationStatus}' and lacks independent physical hydrographic benchmark verification. SUITABLE classification requires INDEPENDENTLY_VERIFIED datum with traceable certificate proof.`
       );
     }
 
@@ -455,7 +525,7 @@ export class EmpiricalValidationEngine {
     // - >= 720 observations
     // - >= 29.53 days
     // - completeness >= 85.0%
-    // - valid vertical datum AND INDEPENDENTLY_VERIFIED
+    // - valid vertical datum AND INDEPENDENTLY_VERIFIED (with full benchmarkProof)
     // - valid provenance (no excluded rows)
     if (coverageCheck && datumCheck && isDatumIndependentlyVerified && provenanceCheck) {
       classification = 'SUITABLE';
@@ -465,7 +535,7 @@ export class EmpiricalValidationEngine {
       datumCheck &&
       dataCompletenessPercentage >= 50.0
     ) {
-      // MARGINAL requires >= 100 obs, >= 5 days, valid datum, and at least 50% completeness
+      // CONFIGURED or SOURCE_DECLARED with >= 100 obs and >= 5 days can at most reach MARGINAL
       classification = 'MARGINAL';
     }
 
@@ -480,6 +550,7 @@ export class EmpiricalValidationEngine {
       coverageCheck,
       datumCheck,
       datumVerificationStatus: params.datumVerificationStatus,
+      benchmarkProof: params.benchmarkProof,
       provenanceCheck,
       reasons,
     };
