@@ -12,6 +12,9 @@ import {
 import { OpenMeteoMarineProvider } from './marine/providers/openMeteoProvider';
 import { SimulatedMarineProvider } from './marine/providers/simulatedMarineProvider';
 import { SimulatedTideProvider } from './marine/providers/simulatedTideProvider';
+import { BoundedMarineCache, CACHE_TTL_POLICIES } from './marine/cache/marineCache';
+import { RequestDeduplicator } from './marine/cache/requestDeduplicator';
+import { getForecastCacheKey, getTidesCacheKey } from './marine/cache/cacheKey';
 
 // Re-export compatibility types for existing consumers
 export {
@@ -22,14 +25,16 @@ export {
   TideType,
 };
 
-// In-memory cache for weather / tides to avoid redundant external network hits
-const cache = new Map<string, { timestamp: number; data: any }>();
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-
 export class MarineService {
   private static forecastProvider: IMarineForecastProvider = new OpenMeteoMarineProvider();
   private static simulatedForecastProvider: IMarineForecastProvider = new SimulatedMarineProvider();
   private static tideProvider: ITidePredictionProvider = new SimulatedTideProvider();
+
+  // Bounded LRU Cache instance (max 500 entries)
+  private static readonly cache = new BoundedMarineCache<any>({ maxCapacity: 500 });
+
+  // In-flight request deduplicator instance
+  private static readonly deduplicator = new RequestDeduplicator();
 
   /**
    * Allows injecting custom providers (useful for testing or future provider swaps)
@@ -54,72 +59,101 @@ export class MarineService {
   }
 
   /**
-   * Clears the in-memory cache
+   * Clears the bounded cache and in-flight deduplicator
    */
   public static clearCache(): void {
-    cache.clear();
+    this.cache.clear();
+    this.deduplicator.clear();
   }
 
   /**
-   * Retrieves marine weather forecast, querying external provider with fallback simulation
+   * Returns current bounded cache size
+   */
+  public static getCacheSize(): number {
+    return this.cache.size();
+  }
+
+  /**
+   * Retrieves marine weather forecast with bounded caching, request deduplication, and fallback simulation
    */
   public static async getForecast(query: MarineForecastQuery): Promise<MarineForecastResponse> {
     const lat = Math.round(query.latitude * 100) / 100;
     const lon = Math.round(query.longitude * 100) / 100;
     const days = Math.min(7, Math.max(1, query.days || 3));
-    const cacheKey = `forecast_${lat}_${lon}_${days}`;
+    const cacheKey = getForecastCacheKey(lat, lon, days, this.forecastProvider.providerId);
 
-    const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      return cached.data;
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
 
-    try {
-      const normalizedForecast = await this.forecastProvider.getForecast({
+    // Deduplicate in-flight operations for identical coordinates and days
+    return this.deduplicator.execute(cacheKey, async () => {
+      // Double check cache inside deduplicator lock
+      const rechecked = this.cache.get(cacheKey);
+      if (rechecked) {
+        return rechecked;
+      }
+
+      try {
+        const normalizedForecast = await this.forecastProvider.getForecast({
+          latitude: lat,
+          longitude: lon,
+          days,
+        });
+
+        const responseDto = mapForecastToResponse(normalizedForecast);
+        // Cache real numerical forecast with 30m TTL
+        this.cache.set(cacheKey, responseDto, CACHE_TTL_POLICIES.FORECAST_MS);
+        return responseDto;
+      } catch {
+        // Fallback on network timeout or external API unreachable
+      }
+
+      // High quality simulated marine forecast fallback
+      const simulated = await this.simulatedForecastProvider.getForecast({
         latitude: lat,
         longitude: lon,
         days,
       });
-
-      const responseDto = mapForecastToResponse(normalizedForecast);
-      cache.set(cacheKey, { timestamp: Date.now(), data: responseDto });
-      return responseDto;
-    } catch {
-      // Fallback on network timeout or external API unreachable
-    }
-
-    // High quality simulated marine forecast fallback: provenance preserves quality: 'simulated'
-    const simulated = await this.simulatedForecastProvider.getForecast({
-      latitude: lat,
-      longitude: lon,
-      days,
+      const fallbackDto = mapForecastToResponse(simulated);
+      // Cache simulated fallback with short 60s TTL for fast recovery
+      this.cache.set(cacheKey, fallbackDto, CACHE_TTL_POLICIES.SIMULATED_MS);
+      return fallbackDto;
     });
-    const fallbackDto = mapForecastToResponse(simulated);
-    cache.set(cacheKey, { timestamp: Date.now(), data: fallbackDto });
-    return fallbackDto;
   }
 
   /**
-   * Generates astronomical and tide prediction data for coastal coordinates
+   * Generates astronomical and tide prediction data with bounded caching and request deduplication
    */
   public static async getTides(latitude: number, longitude: number, dateStr?: string): Promise<TidePredictionResponse> {
     const targetDate = dateStr ? new Date(dateStr) : new Date();
     const isoDate = targetDate.toISOString().split('T')[0];
-    const cacheKey = `tides_${latitude}_${longitude}_${isoDate}`;
+    const cacheKey = getTidesCacheKey(latitude, longitude, isoDate, this.tideProvider.providerId);
 
-    const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      return cached.data;
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
 
-    const normalizedTides = await this.tideProvider.getTidePrediction({
-      latitude,
-      longitude,
-      targetDate,
-    });
+    return this.deduplicator.execute(cacheKey, async () => {
+      const rechecked = this.cache.get(cacheKey);
+      if (rechecked) {
+        return rechecked;
+      }
 
-    const responseDto = mapTidesToResponse(normalizedTides);
-    cache.set(cacheKey, { timestamp: Date.now(), data: responseDto });
-    return responseDto;
+      const normalizedTides = await this.tideProvider.getTidePrediction({
+        latitude,
+        longitude,
+        targetDate,
+      });
+
+      const responseDto = mapTidesToResponse(normalizedTides);
+      const isSimulated = normalizedTides.provenance.quality === 'simulated';
+      const ttl = isSimulated ? CACHE_TTL_POLICIES.SIMULATED_MS : CACHE_TTL_POLICIES.TIDES_MS;
+
+      this.cache.set(cacheKey, responseDto, ttl);
+      return responseDto;
+    });
   }
 }
