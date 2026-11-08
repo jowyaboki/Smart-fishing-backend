@@ -104,122 +104,126 @@ export class EmpiricalValidationEngine {
       ? (rawProof as DatumVerificationBenchmarkProof)
       : undefined;
 
-    // 2. Validate observations with strict and granular exclusion classification
+    // Helper: central exclusion handler ensuring exactly one count per rejected observation
+    const exclude = (reason: keyof ValidationExclusionCounters): void => {
+      exclusionReasons[reason]++;
+      excludedCount++;
+    };
+
+    // 2. Validate observations with strict, mutually exclusive single-assignment classification
     for (const obs of observations) {
-      // Timestamp format validation
+      // 2.1 Timestamp format validation
       if (!obs.timestampUtc || typeof obs.timestampUtc !== 'string' || !obs.timestampUtc.endsWith('Z')) {
-        exclusionReasons.INVALID_TIMESTAMP++;
-        excludedCount++;
+        exclude('INVALID_TIMESTAMP');
         continue;
       }
 
       const date = new Date(obs.timestampUtc);
       if (isNaN(date.getTime())) {
-        exclusionReasons.INVALID_TIMESTAMP++;
-        excludedCount++;
+        exclude('INVALID_TIMESTAMP');
         continue;
       }
 
-      // Duplicate timestamp check
+      // 2.2 Duplicate timestamp check
       if (seenTimestamps.has(obs.timestampUtc)) {
-        exclusionReasons.DUPLICATE_TIMESTAMP++;
-        excludedCount++;
+        exclude('DUPLICATE_TIMESTAMP');
         continue;
       }
       seenTimestamps.add(obs.timestampUtc);
 
-      // Datum check: strictly match station vertical datum
+      // 2.3 Datum check: strictly match station vertical datum
       if (obs.verticalDatum !== station.verticalDatum) {
-        exclusionReasons.DATUM_MISMATCH++;
-        excludedCount++;
+        exclude('DATUM_MISMATCH');
         continue;
       }
 
-      // Check vertical datum verification requirements
-      if (options.requireIndependentDatumVerification) {
-        if (!hasValidProof) {
-          exclusionReasons.DATUM_NOT_VERIFIED++;
-          excludedCount++;
-          continue;
-        }
+      // 2.4 Independent datum verification requirement check
+      if (options.requireIndependentDatumVerification && !hasValidProof) {
+        exclude('DATUM_NOT_VERIFIED');
+        continue;
       }
 
-      // Comprehensive Unit Consistency & Conversion Validation:
-      // Must check rawUnit, provenance units, and mathematical conversion to waterLevelMeters
-      const rawUnitClean = obs.rawUnit?.trim().toLowerCase();
+      // 2.5 Strict Unit Consistency & Numeric Finite Validation:
+      // a) rawUnit must be non-empty string and one of the supported units ('m', 'cm', 'mm', 'ft')
+      const rawUnitClean = typeof obs.rawUnit === 'string' ? obs.rawUnit.trim().toLowerCase() : '';
       if (!['m', 'cm', 'mm', 'ft'].includes(rawUnitClean)) {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+        exclude('INVALID_UNIT');
         continue;
       }
 
+      // b) Mandatory provenance.units metadata completeness
       const prov = obs.provenance;
       const provUnits = prov?.units;
       if (!provUnits || typeof provUnits !== 'object') {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+        exclude('INVALID_UNIT');
         continue;
       }
 
-      // If provenance specifies waterLevel unit, it must be 'm' (standard normalized)
-      if (provUnits.waterLevel && provUnits.waterLevel !== 'm') {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+      // provenance.units.waterLevel must be explicitly present, non-empty, and strictly equal to 'm'
+      if (typeof provUnits.waterLevel !== 'string' || provUnits.waterLevel.trim() !== 'm') {
+        exclude('INVALID_UNIT');
         continue;
       }
 
-      // If provenance specifies rawUnit, it must match observation rawUnit
-      if (provUnits.rawUnit && provUnits.rawUnit.trim().toLowerCase() !== rawUnitClean) {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+      // provenance.units.rawUnit must be explicitly present, non-empty, supported, and match normalized rawUnit
+      if (typeof provUnits.rawUnit !== 'string' || provUnits.rawUnit.trim() === '') {
+        exclude('INVALID_UNIT');
         continue;
       }
 
-      // Verify mathematical conversion from rawValue to waterLevelMeters within numerical tolerance
-      if (typeof obs.rawValue !== 'number' || isNaN(obs.rawValue) || typeof obs.waterLevelMeters !== 'number') {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+      const provRawUnitClean = provUnits.rawUnit.trim().toLowerCase();
+      if (!['m', 'cm', 'mm', 'ft'].includes(provRawUnitClean) || provRawUnitClean !== rawUnitClean) {
+        exclude('INVALID_UNIT');
         continue;
       }
 
+      // c) Finite numeric verification on observation values using Number.isFinite()
+      if (
+        typeof obs.rawValue !== 'number' ||
+        !Number.isFinite(obs.rawValue) ||
+        typeof obs.waterLevelMeters !== 'number' ||
+        !Number.isFinite(obs.waterLevelMeters)
+      ) {
+        exclude('INVALID_UNIT');
+        continue;
+      }
+
+      // d) Mathematical conversion verification within 0.005m numerical tolerance
       let expectedMeters = obs.rawValue;
       if (rawUnitClean === 'cm') expectedMeters = obs.rawValue / 100;
       else if (rawUnitClean === 'mm') expectedMeters = obs.rawValue / 1000;
       else if (rawUnitClean === 'ft') expectedMeters = obs.rawValue * 0.3048;
 
-      if (Math.abs(expectedMeters - obs.waterLevelMeters) > 0.005) {
-        exclusionReasons.INVALID_UNIT++;
-        excludedCount++;
+      if (!Number.isFinite(expectedMeters) || Math.abs(expectedMeters - obs.waterLevelMeters) > 0.005) {
+        exclude('INVALID_UNIT');
         continue;
       }
 
-      // Coordinates validation: observation provenance coordinates must be numeric, in range, and match station within ~0.1 deg (~10km)
+      // 2.6 Coordinates validation: observation coordinates must be numeric, finite, in range, and within ~0.1 deg (~10km) of station
       const provCoords = prov?.coordinates;
       if (
         !provCoords ||
         typeof provCoords.latitude !== 'number' ||
+        !Number.isFinite(provCoords.latitude) ||
         typeof provCoords.longitude !== 'number' ||
-        isNaN(provCoords.latitude) ||
-        isNaN(provCoords.longitude) ||
+        !Number.isFinite(provCoords.longitude) ||
         provCoords.latitude < -90 ||
         provCoords.latitude > 90 ||
         provCoords.longitude < -180 ||
         provCoords.longitude > 180
       ) {
-        exclusionReasons.INVALID_COORDINATES++;
-        excludedCount++;
+        exclude('INVALID_COORDINATES');
         continue;
       }
 
       const latDiff = Math.abs(provCoords.latitude - station.latitude);
       const lonDiff = Math.abs(provCoords.longitude - station.longitude);
       if (latDiff > 0.1 || lonDiff > 0.1) {
-        exclusionReasons.INVALID_COORDINATES++;
-        excludedCount++;
+        exclude('INVALID_COORDINATES');
         continue;
       }
 
-      // Water level physical plausibility bounds check
+      // 2.7 Water level physical plausibility bounds check
       try {
         validateWaterLevelBounds(
           obs.waterLevelMeters,
@@ -227,12 +231,11 @@ export class EmpiricalValidationEngine {
           MOROCCAN_WATER_LEVEL_BOUNDS.MAX_METERS
         );
       } catch {
-        exclusionReasons.OUT_OF_BOUNDS++;
-        excludedCount++;
+        exclude('OUT_OF_BOUNDS');
         continue;
       }
 
-      // Rigorous Provenance Validation:
+      // 2.8 Rigorous Provenance Validation:
       // provider non-empty, retrievedAt valid UTC, qualityTier === observed, dataStatus === observation, no fallback/simulated
       if (
         !prov ||
@@ -248,8 +251,7 @@ export class EmpiricalValidationEngine {
         prov.quality === 'simulated' ||
         prov.isSimulatedFallback === true
       ) {
-        exclusionReasons.INVALID_PROVENANCE++;
-        excludedCount++;
+        exclude('INVALID_PROVENANCE');
         continue;
       }
 
@@ -261,6 +263,11 @@ export class EmpiricalValidationEngine {
       });
 
       const predictedHeight = tidePrediction.currentTide.heightMeters;
+      if (!Number.isFinite(predictedHeight)) {
+        exclude('OUT_OF_BOUNDS');
+        continue;
+      }
+
       const residual = Math.round((predictedHeight - obs.waterLevelMeters) * 10000) / 10000;
 
       validPairs.push({
@@ -302,10 +309,6 @@ export class EmpiricalValidationEngine {
     }
 
     // 5. Evaluate Data Suitability Criteria with true hourly slot coverage
-    // Datum verification status distinction:
-    // CONFIGURED: datum populated from station configuration metadata
-    // SOURCE_DECLARED: datum declared by data source
-    // INDEPENDENTLY_VERIFIED: confirmed by certified physical hydrographic benchmark survey (requires full valid proof)
     let datumVerificationStatus: DatumVerificationStatus = 'CONFIGURED';
     if (hasValidProof) {
       datumVerificationStatus = 'INDEPENDENTLY_VERIFIED';
@@ -325,8 +328,26 @@ export class EmpiricalValidationEngine {
       slotToleranceMinutes: hourlySlotToleranceMinutes,
     });
 
-    // Populate INSUFFICIENT_COVERAGE with missing hourly slots count
+    // Populate INSUFFICIENT_COVERAGE with missing hourly slots count (distinct from rejected observations)
     exclusionReasons.INSUFFICIENT_COVERAGE = suitability.missingHourlySlots;
+
+    // Runtime Accounting Invariant:
+    // excludedCount must strictly equal the sum of rejected observation categories (excluding INSUFFICIENT_COVERAGE)
+    const observationExclusionSum =
+      exclusionReasons.DATUM_MISMATCH +
+      exclusionReasons.DATUM_NOT_VERIFIED +
+      exclusionReasons.INVALID_PROVENANCE +
+      exclusionReasons.INVALID_UNIT +
+      exclusionReasons.INVALID_COORDINATES +
+      exclusionReasons.INVALID_TIMESTAMP +
+      exclusionReasons.DUPLICATE_TIMESTAMP +
+      exclusionReasons.OUT_OF_BOUNDS;
+
+    if (excludedCount !== observationExclusionSum) {
+      throw new Error(
+        `[EmpiricalValidationEngine] Exclusion accounting invariant violated: excludedCount (${excludedCount}) !== sum of observation exclusions (${observationExclusionSum})`
+      );
+    }
 
     // 6. Calculate statistical metrics on aligned pairs
     let statistics = null;
@@ -382,7 +403,7 @@ export class EmpiricalValidationEngine {
       exclusionReasons,
       isCalibrationEnabled: false, // Safeguard strictly locked to false
       metadata: {
-        engineVersion: '2.4.3',
+        engineVersion: '2.4.5',
         predictionProviderId: this.tideProvider.providerId,
         verticalDatum: station.verticalDatum,
         datumVerificationStatus,
