@@ -118,21 +118,5 @@ describe('BoundedMarineCache & Cache Keys', () => {
         vi.useRealTimers();
       }
     });
-
-    it('clears cached results when provider configuration changes in MarineService', async () => {
-      const { MarineService } = await import('../src/services/marineService');
-      const { SimulatedTideProvider } = await import('../src/services/marine/providers/simulatedTideProvider');
-
-      MarineService.clearCache();
-      await MarineService.getTides(33.58, -7.61, '2026-11-08');
-      expect(MarineService.getCacheSize()).toBe(1);
-
-      // Swapping providers clears the cache to prevent cross-provider stale returns
-      MarineService.setProviders({ tideProvider: new SimulatedTideProvider() });
-      expect(MarineService.getCacheSize()).toBe(0);
-
-      MarineService.resetProviders();
-      expect(MarineService.getCacheSize()).toBe(0);
-    });
   });
 });

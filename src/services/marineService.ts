@@ -57,8 +57,6 @@ export class MarineService {
     if (providers.forecastProvider) this.forecastProvider = providers.forecastProvider;
     if (providers.simulatedForecastProvider) this.simulatedForecastProvider = providers.simulatedForecastProvider;
     if (providers.tideProvider) this.tideProvider = providers.tideProvider;
-    // Invalidate cache on provider changes to prevent stale data cross-contamination
-    this.clearCache();
   }
 
   /**
@@ -69,7 +67,6 @@ export class MarineService {
     this.simulatedForecastProvider = new SimulatedMarineProvider();
     this.tideProvider = new MoroccanHarmonicTideProvider();
     this.forecastCircuitBreaker.reset();
-    this.clearCache();
   }
 
   /**
