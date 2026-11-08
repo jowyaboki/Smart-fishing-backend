@@ -15,6 +15,7 @@ import { SimulatedTideProvider } from './marine/providers/simulatedTideProvider'
 import { BoundedMarineCache, CACHE_TTL_POLICIES } from './marine/cache/marineCache';
 import { RequestDeduplicator } from './marine/cache/requestDeduplicator';
 import { getForecastCacheKey, getTidesCacheKey } from './marine/cache/cacheKey';
+import { CircuitBreaker, CircuitMetrics } from './marine/resilience/circuitBreaker';
 
 // Re-export compatibility types for existing consumers
 export {
@@ -36,6 +37,13 @@ export class MarineService {
   // In-flight request deduplicator instance
   private static readonly deduplicator = new RequestDeduplicator();
 
+  // Circuit breaker isolated specifically for the external Open-Meteo forecast provider
+  private static forecastCircuitBreaker = new CircuitBreaker('open-meteo', {
+    failureThreshold: 3,
+    cooldownMs: 30000,
+    maxHalfOpenProbes: 1,
+  });
+
   /**
    * Allows injecting custom providers (useful for testing or future provider swaps)
    */
@@ -50,12 +58,13 @@ export class MarineService {
   }
 
   /**
-   * Resets providers to default implementations
+   * Resets providers and circuit breakers to default implementations
    */
   public static resetProviders(): void {
     this.forecastProvider = new OpenMeteoMarineProvider();
     this.simulatedForecastProvider = new SimulatedMarineProvider();
     this.tideProvider = new SimulatedTideProvider();
+    this.forecastCircuitBreaker.reset();
   }
 
   /**
@@ -74,7 +83,29 @@ export class MarineService {
   }
 
   /**
-   * Retrieves marine weather forecast with bounded caching, request deduplication, and fallback simulation
+   * Configures or swaps the forecast circuit breaker (e.g. for testing with custom clock)
+   */
+  public static setForecastCircuitBreaker(breaker: CircuitBreaker): void {
+    this.forecastCircuitBreaker = breaker;
+  }
+
+  /**
+   * Returns observability metrics for the forecast circuit breaker
+   */
+  public static getForecastCircuitMetrics(): CircuitMetrics {
+    return this.forecastCircuitBreaker.getMetrics();
+  }
+
+  /**
+   * Resets all circuit breakers
+   */
+  public static resetCircuitBreakers(): void {
+    this.forecastCircuitBreaker.reset();
+  }
+
+  /**
+   * Retrieves marine weather forecast with bounded caching, request deduplication,
+   * circuit breaker fault isolation, and fallback simulation.
    */
   public static async getForecast(query: MarineForecastQuery): Promise<MarineForecastResponse> {
     const lat = Math.round(query.latitude * 100) / 100;
@@ -89,17 +120,20 @@ export class MarineService {
 
     // Deduplicate in-flight operations for identical coordinates and days
     return this.deduplicator.execute(cacheKey, async () => {
-      // Double check cache inside deduplicator lock
+      // Recheck cache inside deduplicator lock
       const rechecked = this.cache.get(cacheKey);
       if (rechecked) {
         return rechecked;
       }
 
+      // 1. Attempt protected execution via CircuitBreaker
       try {
-        const normalizedForecast = await this.forecastProvider.getForecast({
-          latitude: lat,
-          longitude: lon,
-          days,
+        const normalizedForecast = await this.forecastCircuitBreaker.execute(async () => {
+          return await this.forecastProvider.getForecast({
+            latitude: lat,
+            longitude: lon,
+            days,
+          });
         });
 
         const responseDto = mapForecastToResponse(normalizedForecast);
@@ -107,10 +141,10 @@ export class MarineService {
         this.cache.set(cacheKey, responseDto, CACHE_TTL_POLICIES.FORECAST_MS);
         return responseDto;
       } catch {
-        // Fallback on network timeout or external API unreachable
+        // CircuitBreakerOpenError or external provider error -> proceed to fallback
       }
 
-      // High quality simulated marine forecast fallback
+      // 2. High-quality simulated marine forecast fallback
       const simulated = await this.simulatedForecastProvider.getForecast({
         latitude: lat,
         longitude: lon,
