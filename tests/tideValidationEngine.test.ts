@@ -8,6 +8,7 @@ import { EmpiricalValidationEngine } from '../src/services/hydrographic/empirica
 import {
   calculatePeakValidationMetrics,
   calculateStatisticalMetrics,
+  detectLocalExtrema,
   DiscreteWaterLevelPoint,
 } from '../src/services/hydrographic/validationStatistics';
 import {
@@ -126,6 +127,180 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(() => calculateStatisticalMetrics([])).toThrow(
         'Cannot calculate statistical metrics for an empty dataset'
       );
+    });
+
+    it('rejects non-finite inputs and arithmetic overflow in statistical metrics', () => {
+      // 1. NaN in predicted water level
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: 2.0,
+            predictedWaterLevelMeters: NaN,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('Non-finite predicted water level');
+
+      // 2. Infinity in observed water level
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: Infinity,
+            predictedWaterLevelMeters: 2.0,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('Non-finite observed water level');
+
+      // 3. Overflow in squared error calculation (1e160 * 1e160 overflows to Infinity)
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: -1e160,
+            predictedWaterLevelMeters: 1e160,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('overflow in squared error');
+    });
+
+    it('validates extrema points and peak metric parameters for finite numbers and non-overflow', () => {
+      // 1. Extrema detector explicitly throws on non-finite or desynchronized points
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite timeMs');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: Infinity },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite heightMeters');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: 'invalid-date', timeMs: 0, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 9999999999, heightMeters: 1.0 }, // desynchronized!
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 2.0 },
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Desynchronized point');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 2.0 }, // duplicate!
+          { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Duplicate timestamp detected');
+
+      // Reject invalid one-point and two-point datasets before returning []
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite timeMs');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: Infinity },
+        ])
+      ).toThrow('Non-finite heightMeters');
+
+      // Equivalent timestamp strings representing the exact same millisecond detected as duplicates
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 1794096000000, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T00:00:00.000Z', timeMs: 1794096000000, heightMeters: 1.1 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 1794099600000, heightMeters: 1.5 },
+        ])
+      ).toThrow('Duplicate timestamp detected');
+
+      // Non-ISO timestamp strings ending in Z are strictly rejected
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: 'fooZ', timeMs: new Date('fooZ').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08Z', timeMs: new Date('2026-11-08Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // Empty and valid short datasets return [] after successful validation
+      expect(detectLocalExtrema([])).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 1.5 },
+        ])
+      ).toEqual([]);
+
+      // Unordered timestamps follow intentional chronological sorting policy
+      const unorderedPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 1794103200000, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 1794096000000, heightMeters: 1.2 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 1794099600000, heightMeters: 3.0 },
+      ];
+      const detectedExtrema = detectLocalExtrema(unorderedPoints);
+      expect(detectedExtrema).toHaveLength(1);
+      expect(detectedExtrema[0].type).toBe('High');
+      expect(detectedExtrema[0].timestampUtc).toBe('2026-11-08T01:00:00Z');
+
+      // 2. Peak metrics rejects invalid matching window (NaN, negative, or overflowing)
+      const t0 = new Date('2026-11-08T00:00:00Z').getTime();
+      const validPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: t0, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: t0 + 3600000, heightMeters: 2.0 },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: t0 + 7200000, heightMeters: 1.0 },
+      ];
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          maxMatchingWindowMinutes: NaN,
+        })
+      ).toThrow('Invalid maxMatchingWindowMinutes');
+
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          maxMatchingWindowMinutes: 1e10, // Overflow / unreasonably large (> 1440 min)
+        })
+      ).toThrow('Invalid maxMatchingWindowMinutes');
+
+      // 3. Peak metrics rejects invalid medianObsIntervalMinutes
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          medianObsIntervalMinutes: -10,
+        })
+      ).toThrow('Invalid medianObsIntervalMinutes');
     });
 
     it('detects tidal extrema peaks on independent predictive series and measures height & timing errors', () => {
@@ -502,6 +677,64 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       // 3 valid conversions passed, 2 bad unit conversions excluded as INVALID_UNIT
       expect(run.exclusionReasons.INVALID_UNIT).toBe(2);
       expect(run.suitability.observationCount).toBe(3);
+    });
+
+    it('rigorously tests non-finite coordinates (NaN, Infinity) triggering INVALID_COORDINATES', async () => {
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const observations: HydrographicObservation[] = [
+        // 1. NaN in latitude
+        {
+          id: 'obs-nan-lat',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 1 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T01:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: NaN, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 2. Infinity in longitude
+        {
+          id: 'obs-inf-lon',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 2 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T02:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: Infinity },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+
+      repo.saveObservationsBatch(observations);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      expect(run.excludedCount).toBe(2);
+      expect(run.exclusionReasons.INVALID_COORDINATES).toBe(2);
+      expect(run.suitability.observationCount).toBe(0);
     });
 
     it('rigorously tests mandatory unit metadata completeness and non-finite values individually', async () => {
@@ -1070,6 +1303,151 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.missingHourlySlots).toBe(2);
       expect(run.suitability.dataCompletenessPercentage).toBe(50.0);
       expect(run.exclusionReasons.INSUFFICIENT_COVERAGE).toBe(2);
+    });
+
+    it('enforces prediction loop safeguards: rejects invalid predictionResolutionMinutes and excessive prediction workloads', async () => {
+      // 1. Invalid prediction resolution <= 0
+      await expect(
+        validationEngine.validateStation({
+          stationId: 'casablanca-port',
+          predictionResolutionMinutes: 0,
+        })
+      ).rejects.toThrow();
+
+      // 2. Non-finite prediction resolution (NaN)
+      await expect(
+        validationEngine.validateStation({
+          stationId: 'casablanca-port',
+          predictionResolutionMinutes: NaN,
+        })
+      ).rejects.toThrow();
+
+      // 3. Permitted boundary workload (within 50,000 points limit) executes properly
+      // A span of 100 hours with 10 min resolution = 601 prediction points <= 50,000
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const validPoints: HydrographicObservation[] = [
+        {
+          id: 'obs-workload-ok-1',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T00:00:00Z',
+          waterLevelMeters: 2.0,
+          verticalDatum: 'ZH',
+          rawValue: 2.0,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T00:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        {
+          id: 'obs-workload-ok-2',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-12T04:00:00Z', // 100 hours later
+          waterLevelMeters: 2.5,
+          verticalDatum: 'ZH',
+          rawValue: 2.5,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-12T04:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+      repo.saveObservationsBatch(validPoints);
+
+      const permittedRun = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+        startDateUtc: '2026-11-08T00:00:00Z',
+        endDateUtc: '2026-11-12T04:00:00Z',
+        predictionResolutionMinutes: 10,
+      });
+      expect(permittedRun.id).toBeDefined();
+
+      // 4. Exceeding workload (> 50,000 points) is rejected BEFORE provider calls begin
+      // Spy on provider to verify 0 calls during independent peak generation when limit is breached
+      const mockProvider: any = {
+        providerId: 'spy-provider',
+        getTidePrediction: vi.fn().mockResolvedValue({
+          currentTide: { heightMeters: 2.1, type: 'Rising' },
+        }),
+      };
+      const engineWithSpy = new EmpiricalValidationEngine(repo, mockProvider);
+
+      // Save a valid observation in 2026 so validPairs.length > 0 triggers peak detection
+      const obsTime1 = '2026-01-01T00:00:00Z';
+      const obsTime2 = '2026-01-15T00:00:00Z';
+      repo.saveObservationsBatch([
+        {
+          id: 'obs-spy-workload-1',
+          stationId: 'casablanca-port',
+          timestampUtc: obsTime1,
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: obsTime1,
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        {
+          id: 'obs-spy-workload-2',
+          stationId: 'casablanca-port',
+          timestampUtc: obsTime2,
+          waterLevelMeters: 2.2,
+          verticalDatum: 'ZH',
+          rawValue: 2.2,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: obsTime2,
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ]);
+
+      // 50,001 points: 50,000 minutes = ~34.72 days with 1-min resolution
+      const startMs = new Date('2026-01-01T00:00:00Z').getTime();
+      const endMsExceeded = new Date(startMs + 50001 * 60 * 1000).toISOString();
+
+      await expect(
+        engineWithSpy.validateStation({
+          stationId: 'casablanca-port',
+          startDateUtc: '2026-01-01T00:00:00Z',
+          endDateUtc: endMsExceeded,
+          predictionResolutionMinutes: 1, // (50001 * 60000) / 60000 + 1 = 50,002 > 50,000
+        })
+      ).rejects.toThrow('Excessive prediction workload');
+
+      // Verify that provider was only called for the 2 observations alignment, never for 50,000 peak points
+      expect(mockProvider.getTidePrediction).toHaveBeenCalledTimes(2);
     });
   });
 
