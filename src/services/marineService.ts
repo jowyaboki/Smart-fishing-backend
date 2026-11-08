@@ -12,6 +12,7 @@ import {
 import { OpenMeteoMarineProvider } from './marine/providers/openMeteoProvider';
 import { SimulatedMarineProvider } from './marine/providers/simulatedMarineProvider';
 import { SimulatedTideProvider } from './marine/providers/simulatedTideProvider';
+import { MoroccanHarmonicTideProvider } from './marine/tides/harmonicTideProvider';
 import { BoundedMarineCache, CACHE_TTL_POLICIES } from './marine/cache/marineCache';
 import { RequestDeduplicator } from './marine/cache/requestDeduplicator';
 import { getForecastCacheKey, getTidesCacheKey } from './marine/cache/cacheKey';
@@ -29,7 +30,8 @@ export {
 export class MarineService {
   private static forecastProvider: IMarineForecastProvider = new OpenMeteoMarineProvider();
   private static simulatedForecastProvider: IMarineForecastProvider = new SimulatedMarineProvider();
-  private static tideProvider: ITidePredictionProvider = new SimulatedTideProvider();
+  // Calibrated Moroccan Harmonic Tide engine as default tide provider
+  private static tideProvider: ITidePredictionProvider = new MoroccanHarmonicTideProvider();
 
   // Bounded LRU Cache instance (max 500 entries)
   private static readonly cache = new BoundedMarineCache<any>({ maxCapacity: 500 });
@@ -63,7 +65,7 @@ export class MarineService {
   public static resetProviders(): void {
     this.forecastProvider = new OpenMeteoMarineProvider();
     this.simulatedForecastProvider = new SimulatedMarineProvider();
-    this.tideProvider = new SimulatedTideProvider();
+    this.tideProvider = new MoroccanHarmonicTideProvider();
     this.forecastCircuitBreaker.reset();
   }
 
