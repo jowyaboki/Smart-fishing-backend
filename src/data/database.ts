@@ -156,6 +156,28 @@ function initializeSchema(db: DatabaseType): void {
     CREATE INDEX IF NOT EXISTS idx_observations_station_time ON hydrographic_observations(station_id, timestamp_utc DESC);
     CREATE INDEX IF NOT EXISTS idx_observations_batch ON hydrographic_observations(import_batch_id);
     CREATE INDEX IF NOT EXISTS idx_batches_station ON ingestion_batches(station_id);
+
+    -- Milestone P2.4: Empirical Tide Validation Runs
+    CREATE TABLE IF NOT EXISTS tide_validation_runs (
+      id TEXT PRIMARY KEY,
+      station_id TEXT NOT NULL,
+      station_name TEXT NOT NULL,
+      period_start_utc TEXT NOT NULL,
+      period_end_utc TEXT NOT NULL,
+      executed_at_utc TEXT NOT NULL,
+      status TEXT NOT NULL,
+      suitability TEXT NOT NULL,
+      statistics TEXT,
+      peak_metrics TEXT,
+      excluded_count INTEGER NOT NULL DEFAULT 0,
+      exclusion_reasons TEXT,
+      is_calibration_enabled INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (station_id) REFERENCES hydrographic_stations (id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_validation_runs_station ON tide_validation_runs(station_id, executed_at_utc DESC);
   `);
 }
 

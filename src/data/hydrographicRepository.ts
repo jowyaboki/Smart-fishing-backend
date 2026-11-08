@@ -8,6 +8,7 @@ import {
   CALIBRATION_REQUIREMENTS,
   VerticalDatum,
 } from '../domain/hydrographicModels';
+import { TideValidationRun } from '../domain/tideValidationModels';
 import { MOROCCAN_TIDE_STATIONS } from '../services/marine/tides/moroccanTideStations';
 
 /**
@@ -460,6 +461,143 @@ export class HydrographicRepository {
         isCalibrationEnabled: false, // Strictly false per guidelines
         reasons,
       },
+    };
+  }
+
+  /**
+   * Persists an empirical tide validation run result
+   */
+  public saveValidationRun(run: TideValidationRun): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO tide_validation_runs (
+        id, station_id, station_name, period_start_utc, period_end_utc,
+        executed_at_utc, status, suitability, statistics, peak_metrics,
+        excluded_count, exclusion_reasons, is_calibration_enabled, metadata,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        station_name = excluded.station_name,
+        period_start_utc = excluded.period_start_utc,
+        period_end_utc = excluded.period_end_utc,
+        executed_at_utc = excluded.executed_at_utc,
+        status = excluded.status,
+        suitability = excluded.suitability,
+        statistics = excluded.statistics,
+        peak_metrics = excluded.peak_metrics,
+        excluded_count = excluded.excluded_count,
+        exclusion_reasons = excluded.exclusion_reasons,
+        is_calibration_enabled = excluded.is_calibration_enabled,
+        metadata = excluded.metadata
+    `);
+
+    stmt.run(
+      run.id,
+      run.stationId,
+      run.stationName,
+      run.periodStartUtc,
+      run.periodEndUtc,
+      run.executedAtUtc,
+      run.status,
+      JSON.stringify(run.suitability),
+      run.statistics ? JSON.stringify(run.statistics) : null,
+      run.peakMetrics ? JSON.stringify(run.peakMetrics) : null,
+      run.excludedCount,
+      JSON.stringify(run.exclusionReasons),
+      run.isCalibrationEnabled ? 1 : 0,
+      JSON.stringify(run.metadata)
+    );
+  }
+
+  /**
+   * Retrieves validation runs for a station or all stations
+   */
+  public getValidationRuns(stationId?: string, limit: number = 50): TideValidationRun[] {
+    let query = 'SELECT * FROM tide_validation_runs';
+    const params: unknown[] = [];
+
+    if (stationId) {
+      query += ' WHERE station_id = ?';
+      params.push(stationId);
+    }
+
+    query += ' ORDER BY executed_at_utc DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = this.db.prepare(query).all(...params) as Array<{
+      id: string;
+      station_id: string;
+      station_name: string;
+      period_start_utc: string;
+      period_end_utc: string;
+      executed_at_utc: string;
+      status: TideValidationRun['status'];
+      suitability: string;
+      statistics: string | null;
+      peak_metrics: string | null;
+      excluded_count: number;
+      exclusion_reasons: string | null;
+      is_calibration_enabled: number;
+      metadata: string;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      stationId: r.station_id,
+      stationName: r.station_name,
+      periodStartUtc: r.period_start_utc,
+      periodEndUtc: r.period_end_utc,
+      executedAtUtc: r.executed_at_utc,
+      status: r.status,
+      suitability: JSON.parse(r.suitability),
+      statistics: r.statistics ? JSON.parse(r.statistics) : null,
+      peakMetrics: r.peak_metrics ? JSON.parse(r.peak_metrics) : null,
+      excludedCount: r.excluded_count,
+      exclusionReasons: r.exclusion_reasons ? JSON.parse(r.exclusion_reasons) : {},
+      isCalibrationEnabled: false as const,
+      metadata: JSON.parse(r.metadata),
+    }));
+  }
+
+  /**
+   * Retrieves a single validation run by ID
+   */
+  public getValidationRun(id: string): TideValidationRun | null {
+    const row = this.db.prepare('SELECT * FROM tide_validation_runs WHERE id = ?').get(id) as
+      | {
+          id: string;
+          station_id: string;
+          station_name: string;
+          period_start_utc: string;
+          period_end_utc: string;
+          executed_at_utc: string;
+          status: TideValidationRun['status'];
+          suitability: string;
+          statistics: string | null;
+          peak_metrics: string | null;
+          excluded_count: number;
+          exclusion_reasons: string | null;
+          is_calibration_enabled: number;
+          metadata: string;
+        }
+      | undefined;
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      stationId: row.station_id,
+      stationName: row.station_name,
+      periodStartUtc: row.period_start_utc,
+      periodEndUtc: row.period_end_utc,
+      executedAtUtc: row.executed_at_utc,
+      status: row.status,
+      suitability: JSON.parse(row.suitability),
+      statistics: row.statistics ? JSON.parse(row.statistics) : null,
+      peakMetrics: row.peak_metrics ? JSON.parse(row.peak_metrics) : null,
+      excludedCount: row.excluded_count,
+      exclusionReasons: row.exclusion_reasons ? JSON.parse(row.exclusion_reasons) : {},
+      isCalibrationEnabled: false as const,
+      metadata: JSON.parse(row.metadata),
     };
   }
 }
