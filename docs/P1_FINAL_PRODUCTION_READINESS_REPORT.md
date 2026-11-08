@@ -12,14 +12,15 @@
 ### A. Executive Summary
 
 - **Overall Status:** **APPROVED WITH DOCUMENTED LIMITATIONS**
-- **Audit Conclusion:** The marine data architecture implemented across Phases 1 through 5 is structurally sound, resilient, highly performant, memory-safe, and 100% backward-compatible with the native Android client. All software resilience and architectural goals have been met with rigorous automated test coverage.
+- **Audit Conclusion:** The marine data architecture implemented across Phases 1 through 5 is structurally sound, resilient, highly performant, memory-safe, and backward-compatible with all established API specifications. All software resilience and architectural goals have been met with rigorous automated test coverage.
 - **Scientific Limitation Notice:** Tide predictions are generated via astronomical semi-diurnal harmonic calculations ($M_2/S_2$ cycles and calibrated lunitidal intervals) based on published hydrographic reference parameters for 5 Moroccan coastal reference ports. **These are theoretical astronomical calculations, not empirical real-time observations or hydrographically certified navigation tables.** No live telemetry tide gauge network exists in the repository. The engine is scientifically approximate and suitable for recreational angling planning, but must not be used for primary navigation or cliff edge safety.
+- **Client Compatibility Scope:** Backward compatibility is verified against the backend DTO schema and response contract tests (`tests/marineContract.test.ts`). However, because the native Android client source code is hosted in an external repository (`Smart-Fishing-Morocco-Android`), end-to-end runtime deserialization on physical Android devices remains formally unverified within this backend repository.
 - **Findings Summary:**
   - **P0 Deficiencies:** 0
-  - **P1 Deficiencies:** 0 (Resolved: default provider ID alignment in `getTidesCacheKey` and explicit scientific disclaimer clarification in `MoroccanHarmonicTideProvider`).
+  - **P1 Deficiencies:** 0 (Resolved: default provider ID alignment in `getTidesCacheKey`, automatic cache invalidation in `MarineService.setProviders()`, and explicit scientific disclaimer clarification in `MoroccanHarmonicTideProvider`).
   - **P2 Deficiencies:** 1 (Lack of direct empirical tide gauge dataset for real-time calibration; documented with explicit limitation).
   - **P3 Improvements:** 1 (Sub-kilometer geographic cache key granularity for hyper-local surf spots).
-- **Scope of Remediation:** Aligned cache key default provider IDs, strengthened scientific disclaimers in tidal predictions, and expanded automated regression test suite to 104 tests across 12 suites with 100% pass rate.
+- **Scope of Remediation:** Aligned cache key default provider IDs, enforced automatic cache clearing on provider swap/reset, strengthened scientific disclaimers in tidal predictions, and expanded automated regression test suite to 105 tests across 12 suites with 100% pass rate.
 
 ---
 
@@ -41,25 +42,28 @@
 
 | Requirement | Source Document | Implementation File | Test Reference | Verification Evidence | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Provider Interfaces** | Architecture §5 | `src/domain/marineModels.ts` | `tests/marineProviders.test.ts` | `IMarineForecastProvider` & `ITidePredictionProvider` contracts enforced | **PASS** |
-| **5 Data Quality Tiers** | Architecture §3 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `observed`, `astronomical_forecast`, `numerical_forecast`, `estimated`, `simulated` strictly typed | **PASS** |
-| **Anti-Upgrading Logic** | Architecture §3.1 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `combineQualityTiers()` enforces lowest tier precedence | **PASS** |
-| **Zero-Value Preservation**| Architecture §4 | `src/services/marine/providers/openMeteoProvider.ts` | `tests/marineProviders.test.ts` | `0.0m` swell and `0.0 km/h` breeze preserved; null throws error | **PASS** |
-| **Angle Normalization** | Roadmap Phase 2 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `normalizeDegrees()` normalizes angles to `[0, 359]` | **PASS** |
-| **Coordinate Validation** | Architecture §7 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | Terrestrial range $[-90, 90]$ and $[-180, 180]$ enforced | **PASS** |
-| **Bounded LRU Cache** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | 500 entry capacity limit with deterministic LRU eviction | **PASS** |
-| **Tier-Aware TTLs** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | 30m forecast, 12h tides, 60s simulated fallback | **PASS** |
-| **Defensive Cache Copy** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | Structured clone prevents caller object mutation | **PASS** |
-| **Request Deduplication** | Roadmap Phase 3 | `src/services/marine/cache/requestDeduplicator.ts` | `tests/marineDeduplication.test.ts` | Coalesces identical concurrent in-flight promises | **PASS** |
-| **Circuit Breaker** | Architecture §6.1 | `src/services/marine/resilience/circuitBreaker.ts` | `tests/marineCircuitBreaker.test.ts` | CLOSED -> OPEN (3 failures), 30s cooldown, HALF_OPEN probe | **PASS** |
-| **Failure Classifier** | Roadmap Phase 4 | `src/services/marine/resilience/failureClassifier.ts` | `tests/marineCircuitBreaker.test.ts` | 429/5xx/timeout trip circuit; 400 validation does not trip | **PASS** |
-| **Provider Isolation** | Architecture §6.1 | `src/services/marineService.ts` | `tests/marineResilienceIntegration.test.ts` | Open-Meteo outage does not affect tide engine or fallbacks | **PASS** |
-| **Moroccan Reference Ports**| Architecture §5.2 | `src/services/marine/tides/moroccanTideStations.ts`| `tests/marineTides.test.ts` | Tanger, Casablanca, Essaouira, Agadir, Dakhla calibrated | **PASS** |
-| **Harmonic Tide Engine** | Roadmap Phase 5 | `src/services/marine/tides/harmonicTideProvider.ts` | `tests/marineTides.test.ts` | Semi-diurnal (~12.42h), spring/neap synodic lunar modulation | **PASS** |
-| **Chronological Sequence** | Roadmap Phase 5 | `src/services/marine/tides/harmonicTideProvider.ts` | `tests/marineTides.test.ts` | Strictly increasing timestamps, alternating High/Low | **PASS** |
-| **Haversine Coverage** | Architecture §5.2 | `src/services/marine/tides/moroccanTideStations.ts`| `tests/marineTides.test.ts` | 250 km radius check; fallback for non-covered coordinates | **PASS** |
-| **Android Compatibility** | Architecture §8 | `src/domain/marineModels.ts` | `tests/marineContract.test.ts` | Identical JSON schema for forecast, tides, and fishing score | **PASS** |
-| **Security Hardening** | Security Report | `src/config/index.ts`, `src/middlewares/*` | `tests/security.test.ts` | HS256 JWT, CORS Android support, rate limit, payload caps | **PASS** |
+| **Provider Interfaces** | Architecture §5 | `src/domain/marineModels.ts` | `tests/marineProviders.test.ts` | `IMarineForecastProvider` & `ITidePredictionProvider` contracts enforced | **PASS (Tested)** |
+| **5 Data Quality Tiers** | Architecture §3 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `observed`, `astronomical_forecast`, `numerical_forecast`, `estimated`, `simulated` strictly typed | **PASS (Tested)** |
+| **Anti-Upgrading Logic** | Architecture §3.1 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `combineQualityTiers()` enforces lowest tier precedence | **PASS (Tested)** |
+| **Zero-Value Preservation**| Architecture §4 | `src/services/marine/providers/openMeteoProvider.ts` | `tests/marineProviders.test.ts` | `0.0m` swell and `0.0 km/h` breeze preserved; null throws error | **PASS (Tested)** |
+| **Angle Normalization** | Roadmap Phase 2 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | `normalizeDegrees()` normalizes angles to `[0, 359]` | **PASS (Tested)** |
+| **Coordinate Validation** | Architecture §7 | `src/domain/marineModels.ts` | `tests/marineDomain.test.ts` | Terrestrial range $[-90, 90]$ and $[-180, 180]$ enforced | **PASS (Tested)** |
+| **Bounded LRU Cache** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | 500 entry capacity limit with deterministic LRU eviction | **PASS (Tested)** |
+| **Tier-Aware TTLs** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | 30m forecast, 12h tides, 60s simulated fallback | **PASS (Tested)** |
+| **Defensive Cache Copy** | Architecture §6.2 | `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` | Structured clone prevents caller object mutation | **PASS (Tested)** |
+| **Provider Change Invalidation** | Audit §2 | `src/services/marineService.ts` | `tests/marineCache.test.ts` | `setProviders`/`resetProviders` clears cache automatically | **PASS (Tested)** |
+| **Request Deduplication** | Roadmap Phase 3 | `src/services/marine/cache/requestDeduplicator.ts` | `tests/marineDeduplication.test.ts` | Coalesces identical concurrent in-flight promises | **PASS (Tested)** |
+| **Circuit Breaker** | Architecture §6.1 | `src/services/marine/resilience/circuitBreaker.ts` | `tests/marineCircuitBreaker.test.ts` | CLOSED -> OPEN (3 failures), 30s cooldown, HALF_OPEN probe | **PASS (Tested)** |
+| **Failure Classifier** | Roadmap Phase 4 | `src/services/marine/resilience/failureClassifier.ts` | `tests/marineCircuitBreaker.test.ts` | 429/5xx/timeout trip circuit; 400 validation does not trip | **PASS (Tested)** |
+| **Provider Isolation** | Architecture §6.1 | `src/services/marineService.ts` | `tests/marineResilienceIntegration.test.ts` | Open-Meteo outage does not affect tide engine or fallbacks | **PASS (Tested)** |
+| **Moroccan Reference Ports**| Architecture §5.2 | `src/services/marine/tides/moroccanTideStations.ts`| `tests/marineTides.test.ts` | Tanger, Casablanca, Essaouira, Agadir, Dakhla calibrated | **PASS (Tested)** |
+| **Harmonic Tide Engine** | Roadmap Phase 5 | `src/services/marine/tides/harmonicTideProvider.ts` | `tests/marineTides.test.ts` | Semi-diurnal (~12.42h), spring/neap synodic lunar modulation | **PASS (Approximate)** |
+| **Chronological Sequence** | Roadmap Phase 5 | `src/services/marine/tides/harmonicTideProvider.ts` | `tests/marineTides.test.ts` | Strictly increasing timestamps, alternating High/Low | **PASS (Tested)** |
+| **Haversine Coverage** | Architecture §5.2 | `src/services/marine/tides/moroccanTideStations.ts`| `tests/marineTides.test.ts` | 250 km radius check; fallback for non-covered coordinates | **PASS (Tested)** |
+| **Android Backend DTO Contract** | Architecture §8 | `src/domain/marineModels.ts` | `tests/marineContract.test.ts` | Identical JSON schema for forecast, tides, and fishing score | **PASS (Tested)** |
+| **Android Client-Side Deserialization** | Architecture §8 | External Android App | N/A (External repo) | Android source not in repository; physical device parsing unverified | **UNVERIFIED** |
+| **Empirical Tide Sensor Calibration** | Architecture §5.2 | N/A (No gauge data) | N/A (No gauge data) | No real-time tide gauge telemetry in repo | **UNVERIFIED** |
+| **Security Hardening** | Security Report | `src/config/index.ts`, `src/middlewares/*` | `tests/security.test.ts` | HS256 JWT, CORS Android support, rate limit, payload caps | **PASS (Tested)** |
 
 ---
 
@@ -67,7 +71,7 @@
 
 - **Provider Abstraction:** The marine subsystem fully abstracts external data sources through `IMarineForecastProvider` and `ITidePredictionProvider`. Direct `fetch()` calls are prohibited outside provider adapters (`src/services/marine/providers/openMeteoProvider.ts`).
 - **Domain Independence:** `src/domain/marineModels.ts` contains zero infrastructure dependencies, framework references, or network logic.
-- **Dependency Injection:** `MarineService` supports dynamic provider injection via `setProviders()` and complete teardown via `resetProviders()`, enabling hermetic testing without shared state mutation.
+- **Dependency Injection:** `MarineService` supports dynamic provider injection via `setProviders()` and complete teardown via `resetProviders()`, enabling hermetic testing without shared state mutation. Calling `setProviders()` or `resetProviders()` flushes cached entries to prevent cross-provider stale returns.
 - **Circular Dependencies:** Zero circular dependencies exist across domain, cache, resilience, tides, and service packages.
 
 ---
@@ -151,6 +155,7 @@ Verified against Android contract regression suite (`tests/marineContract.test.t
 - `POST /api/v1/fishing/score`:
   - `finalScore`, `breakdown`, `safety` preserved.
 - **Additive Fields:** `provenance` and `disclaimer` are optional root properties that native JSON deserializers (Gson / Moshi) ignore without breaking.
+- **Explicit Scope Limitation:** Runtime deserialization on physical Android devices is classified as **Unverified in repository** because the Android mobile project is maintained in a distinct client repository.
 
 ---
 
@@ -165,15 +170,15 @@ Verified against Android contract regression suite (`tests/marineContract.test.t
 
 ### L. Test and Build Evidence
 
-#### Baseline vs. Final Test Runs
+#### Complete Vitest Suite Execution
 ```text
 Test Suite Execution:
 - tests/marineContract.test.ts            3 passed
 - tests/marineDeduplication.test.ts       4 passed
-- tests/marineCache.test.ts               9 passed
+- tests/marineCache.test.ts              10 passed (+1 provider cache invalidation test)
 - tests/marineCircuitBreaker.test.ts      9 passed
 - tests/marineResilienceIntegration.test.ts 2 passed
-- tests/marineTides.test.ts              10 passed (+1 boundary test)
+- tests/marineTides.test.ts              10 passed (+1 250km boundary test)
 - tests/marineProviders.test.ts           8 passed
 - tests/marineDomain.test.ts              9 passed
 - tests/config.test.ts                   10 passed
@@ -182,8 +187,8 @@ Test Suite Execution:
 - tests/api.test.ts                      20 passed
 
 Total Test Suites: 12 passed (12)
-Total Tests:       104 passed (104)
-Duration:          4.67s
+Total Tests:       105 passed (105)
+Duration:          2.41s
 Exit Code:         0
 ```
 
@@ -208,8 +213,9 @@ Exit Code:         0
 | :--- | :--- | :--- | :--- | :--- |
 | **FIND-01** | P1 | `getTidesCacheKey` default parameter was hardcoded to deprecated `'simulated-tide-engine'`, potentially causing key divergence when caller omits provider ID. | Updated default parameter in `cacheKey.ts` to `'moroccan-harmonic-engine'`. Added regression test in `marineCache.test.ts`. | **RESOLVED** |
 | **FIND-02** | P1 | `MoroccanHarmonicTideProvider` disclaimer lacked explicit notice regarding theoretical astronomical nature vs. real-time tide gauge telemetry. | Enhanced disclaimer string to explicitly state calculations are theoretical gravitational approximations without storm surge or live gauge telemetry. | **RESOLVED** |
-| **FIND-03** | P2 | Lack of empirical calibration dataset (historical tide gauge sensor recordings) to quantify absolute water level RMSE. | Documented limitation in report and provenance disclaimers; scheduled empirical hydrographic dataset ingestion for Milestone P2. | **DOCUMENTED** |
-| **FIND-04** | P3 | 2-decimal-place cache key (~1.1 km) groups fishing ledges within 1 km into the same cache entry. | Evaluated: Open-Meteo marine wave models operate on 5–10 km grids; 2 decimal places is optimal for model resolution and prevents cache fragmentation. | **ACCEPTED** |
+| **FIND-03** | P1 | `MarineService.setProviders()` and `resetProviders()` did not clear the cache, allowing stale cached entries from previous providers to persist. | Updated `setProviders` and `resetProviders` to invoke `clearCache()`. Added regression test in `marineCache.test.ts`. | **RESOLVED** |
+| **FIND-04** | P2 | Lack of empirical calibration dataset (historical tide gauge sensor recordings) to quantify absolute water level RMSE. | Documented limitation in report and provenance disclaimers; scheduled empirical hydrographic dataset ingestion for Milestone P2. | **DOCUMENTED** |
+| **FIND-05** | P3 | 2-decimal-place cache key (~1.1 km) groups fishing ledges within 1 km into the same cache entry. | Evaluated: Open-Meteo marine wave models operate on 5–10 km grids; 2 decimal places is optimal for model resolution and prevents cache fragmentation. | **ACCEPTED** |
 
 ---
 
@@ -234,7 +240,7 @@ If a critical issue occurs in production:
 | Scientific tidal validation | **PASS** | Calibrated reference ports, semi-diurnal cycles, honest disclaimers. |
 | Android API compatibility | **PASS** | 100% backward compatibility on forecast, tides, and fishing score. |
 | Security hardening intact | **PASS** | HS256 JWT, CORS mobile support, rate limiting, and 500 error sanitization. |
-| Test suite execution | **PASS** | 104/104 tests passed across 12 suites. |
+| Test suite execution | **PASS** | 105/105 tests passed across 12 suites. |
 | Typecheck & Production build | **PASS** | 0 TypeScript errors; build succeeded. |
 
 ---
@@ -244,7 +250,7 @@ If a critical issue occurs in production:
 ### **APPROVED WITH DOCUMENTED LIMITATIONS**
 
 **Justification:**
-The marine subsystem has achieved full architectural maturity, high resilience against upstream provider failures, guaranteed memory safety, and 100% backward compatibility for the native Android client. All automated tests pass without regressions. The scientific limitation regarding theoretical harmonic tidal approximation versus empirical telemetry is clearly documented in this audit and communicated transparently to consumers via API provenance metadata.
+The marine subsystem has achieved full architectural maturity, high resilience against upstream provider failures, guaranteed memory safety, and 100% backward compatibility for the native Android client backend contract. All automated tests pass without regressions. The scientific limitation regarding theoretical harmonic tidal approximation versus empirical telemetry is clearly documented in this audit and communicated transparently to consumers via API provenance metadata.
 
 ---
 
@@ -253,3 +259,28 @@ The marine subsystem has achieved full architectural maturity, high resilience a
 1. **Milestone P2 (Hydrographic Sensor Integration):** Ingest empirical tidal observations from Moroccan port authorities (ANP / Marine Royale) to compute empirical prediction error metrics (RMSE $< 15$ cm).
 2. **Barometric Surge Modeling:** Integrate atmospheric pressure deviations from standard (1013.25 hPa) to modulate astronomical tidal heights during winter Atlantic storm swells.
 3. **Distributed Cache (Multi-Instance Scaling):** When scaling the backend beyond a single Node.js instance, migrate `BoundedMarineCache` and `RequestDeduplicator` to Redis / Dragonfly with cluster-wide circuit breaking.
+
+---
+
+### Appendix: Final Evidence Matrix
+
+| Acceptance requirement | Implementation evidence | Test evidence | Execution result | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Provider Abstraction** | `IMarineForecastProvider` & `ITidePredictionProvider` implemented in `src/domain/marineModels.ts` and adapters in `src/services/marine/providers/` | `tests/marineProviders.test.ts` (8 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Data Quality Tiers** | 5 quality tiers defined in `src/domain/marineModels.ts`; `combineQualityTiers()` anti-upgrading logic | `tests/marineDomain.test.ts` (9 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Zero-Value Preservation** | Strict null/undefined checks in `src/services/marine/providers/openMeteoProvider.ts` | `tests/marineProviders.test.ts` (zero preservation test) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Bounded LRU Cache** | `BoundedMarineCache` (max 500 entries) in `src/services/marine/cache/marineCache.ts` | `tests/marineCache.test.ts` (10 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Cache Key Defaults & Invalidation** | `getTidesCacheKey` provider default in `cacheKey.ts`; `setProviders`/`resetProviders` clears cache in `marineService.ts` | `tests/marineCache.test.ts` (key default & swap invalidation tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Request Deduplication** | `RequestDeduplicator` coalescing in-flight promises in `src/services/marine/cache/requestDeduplicator.ts` | `tests/marineDeduplication.test.ts` (4 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Circuit Breaker** | `CircuitBreaker` (CLOSED/OPEN/HALF_OPEN, 3 failures, 30s cooldown) in `src/services/marine/resilience/circuitBreaker.ts` | `tests/marineCircuitBreaker.test.ts` (9 tests), `tests/marineResilienceIntegration.test.ts` (2 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Error Classification** | `classifyError()` distinguishing availability from validation errors in `failureClassifier.ts` | `tests/marineCircuitBreaker.test.ts` (error classification tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Moroccan Reference Ports** | 5 stations (Tanger Med, Casablanca, Essaouira, Agadir, Dakhla) in `moroccanTideStations.ts` | `tests/marineTides.test.ts` (10 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Harmonic Tide Engine** | Astronomical semi-diurnal equations (~12.42h), spring/neap modulation in `harmonicTideProvider.ts` | `tests/marineTides.test.ts` (micro- vs meso-tidal tests) | `npm test` exit code 0 | **PASS (Approximate Model)** |
+| **Event Chronology** | 4 daily events strictly alternating Low/High with increasing UTC ISO timestamps in `harmonicTideProvider.ts` | `tests/marineTides.test.ts` (event ordering test) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **250 km Haversine Coverage** | Haversine distance and 250 km boundary check in `moroccanTideStations.ts` | `tests/marineTides.test.ts` (250km boundary test) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Scientific Accuracy Validation** | Hydrographic tide gauge observations / empirical RMSE dataset | No gauge telemetry dataset in repo | Unverified against empirical sensors | **UNVERIFIED (Documented Limitation)** |
+| **Android Backend DTO Contract** | Response schema mapping in `src/domain/marineModels.ts` (`MarineForecastResponse`, `TidePredictionResponse`) | `tests/marineContract.test.ts` (3 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Android Client Runtime Parsing** | Kotlin/Gson/Moshi deserialization in external Android app | External repository (`Smart-Fishing-Morocco-Android`) | Not verifiable in backend repository | **UNVERIFIED (Client Outside Repo)** |
+| **Security Baseline** | JWT HS256, CORS mobile support, rate limiter, error sanitization in `src/middlewares/*`, `src/config/index.ts` | `tests/security.test.ts` (17 tests), `tests/config.test.ts` (10 tests) | `npm test` exit code 0 | **PASS (Implemented & Tested)** |
+| **Typecheck Cleanliness** | `tsconfig.json` | `tsc --noEmit` | Exit code 0, 0 errors | **PASS** |
+| **Production Build** | `package.json` build script | `npm run build` (`tsc`) | Exit code 0, build successful | **PASS** |
