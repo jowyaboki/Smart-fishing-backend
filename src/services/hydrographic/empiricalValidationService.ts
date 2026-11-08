@@ -63,6 +63,28 @@ export class EmpiricalValidationEngine {
   ): Promise<TideValidationRun> {
     const executedAtUtc = new Date().toISOString();
     const runId = `val-${crypto.randomUUID()}`;
+
+    // Validate options upfront before proceeding
+    if (
+      options.predictionResolutionMinutes !== undefined &&
+      (!Number.isFinite(options.predictionResolutionMinutes) ||
+        options.predictionResolutionMinutes <= 0 ||
+        options.predictionResolutionMinutes > 1440)
+    ) {
+      throw new Error(
+        `[EmpiricalValidationEngine] Invalid predictionResolutionMinutes: ${options.predictionResolutionMinutes}`
+      );
+    }
+
+    if (
+      options.hourlySlotToleranceMinutes !== undefined &&
+      (!Number.isFinite(options.hourlySlotToleranceMinutes) || options.hourlySlotToleranceMinutes <= 0)
+    ) {
+      throw new Error(
+        `[EmpiricalValidationEngine] Invalid hourlySlotToleranceMinutes: ${options.hourlySlotToleranceMinutes}`
+      );
+    }
+
     const predictionResolutionMinutes = Math.max(1, options.predictionResolutionMinutes || 10);
     const hourlySlotToleranceMinutes = Math.max(5, options.hourlySlotToleranceMinutes || 30);
 
@@ -359,11 +381,43 @@ export class EmpiricalValidationEngine {
       // 7. Peak Detection on an Independent Predictive Series
       const startMs = new Date(periodStartUtc).getTime();
       const endMs = new Date(periodEndUtc).getTime();
+
+      // Service-level prediction safeguards: validate bounds and prevent non-terminating loops
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+        throw new Error(
+          `[EmpiricalValidationEngine] Invalid prediction period bounds: startMs (${startMs}) must be <= endMs (${endMs})`
+        );
+      }
+
+      if (
+        !Number.isFinite(predictionResolutionMinutes) ||
+        predictionResolutionMinutes <= 0 ||
+        predictionResolutionMinutes > 1440
+      ) {
+        throw new Error(
+          `[EmpiricalValidationEngine] Invalid predictionResolutionMinutes: ${predictionResolutionMinutes}`
+        );
+      }
+
       const stepMs = predictionResolutionMinutes * 60 * 1000;
+      if (!Number.isFinite(stepMs) || stepMs <= 0) {
+        throw new Error(`[EmpiricalValidationEngine] Non-finite prediction stepMs calculated: ${stepMs}`);
+      }
+
+      const estimatedPoints = Math.floor((endMs - startMs) / stepMs) + 1;
+      const MAX_PREDICTION_POINTS = 50000;
+      if (estimatedPoints > MAX_PREDICTION_POINTS) {
+        throw new Error(
+          `[EmpiricalValidationEngine] Excessive prediction workload: ${estimatedPoints} points exceeds safe limit of ${MAX_PREDICTION_POINTS}`
+        );
+      }
 
       const independentPredictedPoints: DiscreteWaterLevelPoint[] = [];
 
       for (let t = startMs; t <= endMs; t += stepMs) {
+        if (!Number.isFinite(t)) {
+          throw new Error(`[EmpiricalValidationEngine] Non-finite timestamp in prediction loop: ${t}`);
+        }
         const pointDate = new Date(t);
         const pred = await this.tideProvider.getTidePrediction({
           latitude: station.latitude,
@@ -371,10 +425,17 @@ export class EmpiricalValidationEngine {
           targetDate: pointDate,
         });
 
+        const predHeight = pred.currentTide?.heightMeters;
+        if (typeof predHeight !== 'number' || !Number.isFinite(predHeight)) {
+          throw new Error(
+            `[EmpiricalValidationEngine] Harmonic provider produced non-finite predicted water level (${predHeight}) at timestamp ${pointDate.toISOString()}`
+          );
+        }
+
         independentPredictedPoints.push({
           timestampUtc: pointDate.toISOString(),
           timeMs: t,
-          heightMeters: pred.currentTide.heightMeters,
+          heightMeters: predHeight,
         });
       }
 
