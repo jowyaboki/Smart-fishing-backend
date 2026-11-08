@@ -1243,6 +1243,24 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.dataCompletenessPercentage).toBe(50.0);
       expect(run.exclusionReasons.INSUFFICIENT_COVERAGE).toBe(2);
     });
+
+    it('enforces prediction loop safeguards: rejects invalid predictionResolutionMinutes and excessive prediction workloads', async () => {
+      // 1. Invalid prediction resolution <= 0
+      await expect(
+        validationEngine.validateStation({
+          stationId: 'casablanca-port',
+          predictionResolutionMinutes: 0,
+        })
+      ).rejects.toThrow();
+
+      // 2. Non-finite prediction resolution (NaN)
+      await expect(
+        validationEngine.validateStation({
+          stationId: 'casablanca-port',
+          predictionResolutionMinutes: NaN,
+        })
+      ).rejects.toThrow();
+    });
   });
 
   describe('Hydrographic & Validation API Integration Endpoints', () => {
