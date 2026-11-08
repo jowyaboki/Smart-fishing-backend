@@ -40,6 +40,18 @@ describe('Moroccan Harmonic Tide Engine Unit & Scientific Validation', () => {
       expect(nonMorocco.isWithinMoroccanWaters).toBe(false);
       expect(nonMorocco.distanceKm).toBeGreaterThan(500);
     });
+
+    it('accurately evaluates boundary behavior at exactly 250 km threshold', () => {
+      // Station Tanger Med at (35.89, -5.50)
+      // Exactly 250 km check: a point at distance <= 250 is covered, > 250 is not
+      const justInside = findNearestTideStation(35.89, -2.75); // ~248.8 km
+      expect(justInside.distanceKm).toBeLessThanOrEqual(250);
+      expect(justInside.isWithinMoroccanWaters).toBe(true);
+
+      const justOutside = findNearestTideStation(35.89, -2.70); // ~253.3 km
+      expect(justOutside.distanceKm).toBeGreaterThan(250);
+      expect(justOutside.isWithinMoroccanWaters).toBe(false);
+    });
   });
 
   describe('Scientific Tide Height & Micro-tidal vs Meso-tidal Profiles', () => {

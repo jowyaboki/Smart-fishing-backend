@@ -33,6 +33,10 @@ describe('BoundedMarineCache & Cache Keys', () => {
       expect(t1).toBe('tides:simulated-tide-engine:33.58:-7.61:2026-11-08');
       expect(t2).toBe('tides:simulated-tide-engine:33.58:-7.61:2026-11-09');
       expect(t1).not.toBe(t2);
+
+      // Default provider should be 'moroccan-harmonic-engine'
+      const tDefault = getTidesCacheKey(33.58, -7.61, '2026-11-08');
+      expect(tDefault).toBe('tides:moroccan-harmonic-engine:33.58:-7.61:2026-11-08');
     });
   });
 

@@ -22,7 +22,7 @@ export function getTidesCacheKey(
   latitude: number,
   longitude: number,
   isoDate: string,
-  providerId = 'simulated-tide-engine'
+  providerId = 'moroccan-harmonic-engine'
 ): string {
   const lat = normalizeCoord(latitude);
   const lon = normalizeCoord(longitude);
