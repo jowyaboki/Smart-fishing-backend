@@ -504,6 +504,64 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.observationCount).toBe(3);
     });
 
+    it('rigorously tests non-finite coordinates (NaN, Infinity) triggering INVALID_COORDINATES', async () => {
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const observations: HydrographicObservation[] = [
+        // 1. NaN in latitude
+        {
+          id: 'obs-nan-lat',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 1 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T01:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: NaN, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 2. Infinity in longitude
+        {
+          id: 'obs-inf-lon',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 2 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T02:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: Infinity },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+
+      repo.saveObservationsBatch(observations);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      expect(run.excludedCount).toBe(2);
+      expect(run.exclusionReasons.INVALID_COORDINATES).toBe(2);
+      expect(run.suitability.observationCount).toBe(0);
+    });
+
     it('rigorously tests mandatory unit metadata completeness and non-finite values individually', async () => {
       const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
       const observations: HydrographicObservation[] = [

@@ -25,6 +25,17 @@ export function calculateStatisticalMetrics(
     throw new Error('Cannot calculate statistical metrics for an empty dataset');
   }
 
+  // Verify all input numeric values are finite numbers
+  for (let i = 0; i < n; i++) {
+    const p = pairs[i];
+    if (
+      !Number.isFinite(p.predictedWaterLevelMeters) ||
+      !Number.isFinite(p.observedWaterLevelMeters)
+    ) {
+      throw new Error(`Non-finite numeric value in observation pair at index ${i}`);
+    }
+  }
+
   const errors = pairs.map((p) => p.predictedWaterLevelMeters - p.observedWaterLevelMeters);
 
   let sumError = 0;
@@ -35,8 +46,11 @@ export function calculateStatisticalMetrics(
 
   for (let i = 0; i < n; i++) {
     const err = errors[i];
-    const absErr = Math.abs(err);
+    if (!Number.isFinite(err)) {
+      throw new Error(`Non-finite residual calculated at index ${i}`);
+    }
 
+    const absErr = Math.abs(err);
     sumError += err;
     sumAbsError += absErr;
     sumSquaredError += err * err;
@@ -56,6 +70,17 @@ export function calculateStatisticalMetrics(
     sumSquaredDeviation += diff * diff;
   }
   const standardDeviation = Math.sqrt(sumSquaredDeviation / n);
+
+  if (
+    !Number.isFinite(bias) ||
+    !Number.isFinite(mae) ||
+    !Number.isFinite(rmse) ||
+    !Number.isFinite(standardDeviation) ||
+    !Number.isFinite(maxAbs) ||
+    !Number.isFinite(minAbs)
+  ) {
+    throw new Error('Statistical calculation produced non-finite metric output');
+  }
 
   // Round metrics to 4 decimal places for clean floating point representation
   return {
@@ -99,6 +124,10 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
     const prev = sorted[i - 1].heightMeters;
     const curr = sorted[i].heightMeters;
     const next = sorted[i + 1].heightMeters;
+
+    if (!Number.isFinite(prev) || !Number.isFinite(curr) || !Number.isFinite(next)) {
+      continue;
+    }
 
     if (curr > prev && curr >= next) {
       extrema.push({
@@ -193,6 +222,10 @@ export function calculatePeakValidationMetrics(
 
       const heightError = matchedPred.heightMeters - obs.heightMeters;
       const timingErrorMinutes = (matchedPred.timeMs - obs.timeMs) / (60 * 1000);
+
+      if (!Number.isFinite(heightError) || !Number.isFinite(timingErrorMinutes)) {
+        continue;
+      }
 
       if (obs.type === 'High') highMatchedCount++;
       if (obs.type === 'Low') lowMatchedCount++;
