@@ -495,6 +495,129 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.observationCount).toBe(3);
     });
 
+    it('rigorously verifies mandatory unit metadata completeness, empty strings, and non-finite numbers', async () => {
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const observations: HydrographicObservation[] = [
+        // 1. Missing provenance.units.waterLevel
+        {
+          id: 'obs-missing-wl-unit',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 1 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T01:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { rawUnit: 'm' } as any, // missing waterLevel!
+            isSimulatedFallback: false,
+          },
+        },
+        // 2. Missing provenance.units.rawUnit
+        {
+          id: 'obs-missing-raw-unit',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 2 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T02:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm' } as any, // missing rawUnit!
+            isSimulatedFallback: false,
+          },
+        },
+        // 3. Empty unit string
+        {
+          id: 'obs-empty-unit',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 3 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: ' ',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T03:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: ' ' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 4. Non-finite waterLevelMeters: Infinity (1e999 becomes Infinity in JS)
+        {
+          id: 'obs-inf-val',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 4 * 3600000).toISOString(),
+          waterLevelMeters: Infinity,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T04:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 5. Unsupported unit 'furlongs'
+        {
+          id: 'obs-unsupported-unit',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 5 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'furlongs' as any,
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T05:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'furlongs' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+
+      repo.saveObservationsBatch(observations);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      // All 5 must be rejected specifically under INVALID_UNIT (and not INVALID_PROVENANCE)
+      expect(run.excludedCount).toBe(5);
+      expect(run.exclusionReasons.INVALID_UNIT).toBe(5);
+      expect(run.exclusionReasons.INVALID_PROVENANCE).toBe(0);
+      expect(run.suitability.observationCount).toBe(0);
+    });
+
     it('rejects promotion to INDEPENDENTLY_VERIFIED when benchmark proof is missing or incomplete (simple boolean false proof rejected)', async () => {
       // Station casablanca-port with only isDatumIndependentlyVerified: true (missing certificate ID, survey ref, etc.)
       const station = repo.getStation('casablanca-port');

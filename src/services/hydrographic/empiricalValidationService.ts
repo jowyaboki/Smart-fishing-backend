@@ -144,15 +144,16 @@ export class EmpiricalValidationEngine {
         }
       }
 
-      // Comprehensive Unit Consistency & Conversion Validation:
-      // Must check rawUnit, provenance units, and mathematical conversion to waterLevelMeters
-      const rawUnitClean = obs.rawUnit?.trim().toLowerCase();
+      // Comprehensive Unit Consistency & Numeric Finite Validation:
+      // 1. Validate rawUnit presence and supported values ('m', 'cm', 'mm', 'ft')
+      const rawUnitClean = typeof obs.rawUnit === 'string' ? obs.rawUnit.trim().toLowerCase() : '';
       if (!['m', 'cm', 'mm', 'ft'].includes(rawUnitClean)) {
         exclusionReasons.INVALID_UNIT++;
         excludedCount++;
         continue;
       }
 
+      // 2. Mandatory provenance unit metadata completeness
       const prov = obs.provenance;
       const provUnits = prov?.units;
       if (!provUnits || typeof provUnits !== 'object') {
@@ -161,27 +162,37 @@ export class EmpiricalValidationEngine {
         continue;
       }
 
-      // If provenance specifies waterLevel unit, it must be 'm' (standard normalized)
-      if (provUnits.waterLevel && provUnits.waterLevel !== 'm') {
+      // provenance.units.waterLevel must be explicitly present and equal to 'm'
+      if (typeof provUnits.waterLevel !== 'string' || provUnits.waterLevel.trim() !== 'm') {
         exclusionReasons.INVALID_UNIT++;
         excludedCount++;
         continue;
       }
 
-      // If provenance specifies rawUnit, it must match observation rawUnit
-      if (provUnits.rawUnit && provUnits.rawUnit.trim().toLowerCase() !== rawUnitClean) {
+      // provenance.units.rawUnit must be explicitly present and match normalized rawUnit
+      if (
+        typeof provUnits.rawUnit !== 'string' ||
+        provUnits.rawUnit.trim() === '' ||
+        provUnits.rawUnit.trim().toLowerCase() !== rawUnitClean
+      ) {
         exclusionReasons.INVALID_UNIT++;
         excludedCount++;
         continue;
       }
 
-      // Verify mathematical conversion from rawValue to waterLevelMeters within numerical tolerance
-      if (typeof obs.rawValue !== 'number' || isNaN(obs.rawValue) || typeof obs.waterLevelMeters !== 'number') {
+      // 3. Reject non-finite numeric values (NaN, Infinity, -Infinity)
+      if (
+        typeof obs.rawValue !== 'number' ||
+        !Number.isFinite(obs.rawValue) ||
+        typeof obs.waterLevelMeters !== 'number' ||
+        !Number.isFinite(obs.waterLevelMeters)
+      ) {
         exclusionReasons.INVALID_UNIT++;
         excludedCount++;
         continue;
       }
 
+      // 4. Mathematical conversion verification within numerical tolerance
       let expectedMeters = obs.rawValue;
       if (rawUnitClean === 'cm') expectedMeters = obs.rawValue / 100;
       else if (rawUnitClean === 'mm') expectedMeters = obs.rawValue / 1000;
