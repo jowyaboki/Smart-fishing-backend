@@ -12,7 +12,7 @@ import aiRoutes from './routes/aiRoutes';
 import encyclopediaRoutes from './routes/encyclopediaRoutes';
 import { errorHandler } from './middlewares/errorHandler';
 
-export function configureCors(): CorsOptions {
+export function configureCors(corsOrigin: string = config.corsOrigin): CorsOptions {
   return {
     origin: (origin, callback) => {
       // Allow requests with no origin (like native Android mobile apps, curl, server-to-server)
@@ -20,13 +20,13 @@ export function configureCors(): CorsOptions {
         return callback(null, true);
       }
 
-      // If set to wildcard '*', allow all
-      if (config.corsOrigin === '*') {
+      // If set to wildcard '*' in non-production, allow all
+      if (corsOrigin === '*') {
         return callback(null, true);
       }
 
-      // Split comma-separated origins if multiple
-      const allowedOrigins = config.corsOrigin
+      // Split comma-separated origins if multiple configured
+      const allowedOrigins = corsOrigin
         .split(',')
         .map((o) => o.trim())
         .filter(Boolean);
@@ -47,9 +47,11 @@ export function createApp(): Express {
 
   const app = express();
 
-  // Trust proxy configuration
+  // Trust proxy configuration (only enable when explicitly configured, e.g. behind Nginx)
   if (config.trustProxy !== false) {
     app.set('trust proxy', config.trustProxy);
+  } else {
+    app.set('trust proxy', false);
   }
 
   // Security headers with Helmet

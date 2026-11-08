@@ -7,6 +7,7 @@ describe('Configuration Security Hardening', () => {
       loadConfig({
         NODE_ENV: 'production',
         JWT_SECRET: '',
+        CORS_ORIGIN: 'https://smartfishing.ma',
       });
     }).toThrow('JWT_SECRET is mandatory in production environment');
   });
@@ -15,6 +16,7 @@ describe('Configuration Security Hardening', () => {
     expect(() => {
       loadConfig({
         NODE_ENV: 'production',
+        CORS_ORIGIN: 'https://smartfishing.ma',
       });
     }).toThrow('JWT_SECRET is mandatory in production environment');
   });
@@ -24,6 +26,7 @@ describe('Configuration Security Hardening', () => {
       loadConfig({
         NODE_ENV: 'production',
         JWT_SECRET: 'short-secret-less-than-32-chars',
+        CORS_ORIGIN: 'https://smartfishing.ma',
       });
     }).toThrow('JWT_SECRET must be at least 32 characters long in production');
   });
@@ -33,6 +36,7 @@ describe('Configuration Security Hardening', () => {
       loadConfig({
         NODE_ENV: 'production',
         JWT_SECRET: 'smart-fishing-morocco-secret-key-12345',
+        CORS_ORIGIN: 'https://smartfishing.ma',
       });
     }).toThrow('JWT_SECRET cannot use a known default or insecure development value');
 
@@ -40,21 +44,45 @@ describe('Configuration Security Hardening', () => {
       loadConfig({
         NODE_ENV: 'production',
         JWT_SECRET: 'supersecretkey_change_in_production',
+        CORS_ORIGIN: 'https://smartfishing.ma',
+      });
+    }).toThrow('JWT_SECRET cannot use a known default or insecure development value');
+
+    expect(() => {
+      loadConfig({
+        NODE_ENV: 'production',
+        JWT_SECRET: 'replace_with_a_secure_random_32_chars_secret_in_production',
+        CORS_ORIGIN: 'https://smartfishing.ma',
       });
     }).toThrow('JWT_SECRET cannot use a known default or insecure development value');
   });
 
-  it('successfully loads in production with a strong random secret >= 32 characters', () => {
+  it('throws an error when starting in production with unrestricted CORS_ORIGIN (*)', () => {
+    const validSecret = 'strong-production-secret-key-9876543210-morocco';
+    expect(() => {
+      loadConfig({
+        NODE_ENV: 'production',
+        JWT_SECRET: validSecret,
+        CORS_ORIGIN: '*',
+      });
+    }).toThrow('Unrestricted wildcard CORS_ORIGIN ("*") is prohibited in production');
+  });
+
+  it('successfully loads in production with a strong random secret >= 32 chars and valid CORS_ORIGIN', () => {
     const validSecret = 'strong-production-secret-key-9876543210-morocco';
     const loaded = loadConfig({
       NODE_ENV: 'production',
       JWT_SECRET: validSecret,
       PORT: '8080',
+      CORS_ORIGIN: 'https://smartfishing.ma,https://admin.smartfishing.ma',
+      TRUST_PROXY: '1',
     });
 
     expect(loaded.nodeEnv).toBe('production');
     expect(loaded.jwtSecret).toBe(validSecret);
     expect(loaded.port).toBe(8080);
+    expect(loaded.corsOrigin).toBe('https://smartfishing.ma,https://admin.smartfishing.ma');
+    expect(loaded.trustProxy).toBe(1);
   });
 
   it('provides safe dev fallback in development mode with a warning', () => {
@@ -89,5 +117,13 @@ describe('Configuration Security Hardening', () => {
         PORT: '999999',
       });
     }).toThrow('Invalid PORT value');
+  });
+
+  it('validates invalid JWT_EXPIRES_IN format', () => {
+    expect(() => {
+      loadConfig({
+        JWT_EXPIRES_IN: 'invalid-expiry-string',
+      });
+    }).toThrow('Invalid JWT_EXPIRES_IN format');
   });
 });

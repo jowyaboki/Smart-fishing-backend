@@ -12,32 +12,49 @@ const KNOWN_INSECURE_SECRETS = new Set([
   'password',
   '12345678',
   '1234567890',
+  'replace_with_a_secure_random_32_chars_secret_in_production',
 ]);
 
 const envSchema = z
   .object({
-    PORT: z.string().default('3000').transform((val) => {
-      const port = parseInt(val, 10);
-      if (isNaN(port) || port <= 0 || port > 65535) {
-        throw new Error(`Invalid PORT value: ${val}`);
-      }
-      return port;
-    }),
+    PORT: z
+      .string()
+      .default('3000')
+      .transform((val, ctx) => {
+        const port = parseInt(val, 10);
+        if (isNaN(port) || port <= 0 || port > 65535) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Invalid PORT value: ${val}. Must be an integer between 1 and 65535.`,
+          });
+          return z.NEVER;
+        }
+        return port;
+      }),
     NODE_ENV: z
       .enum(['development', 'test', 'production'])
       .default('development'),
     JWT_SECRET: z.string().optional(),
-    JWT_EXPIRES_IN: z.string().default('7d'),
-    DATABASE_PATH: z.string().default('smart_fishing.db'),
+    JWT_EXPIRES_IN: z
+      .string()
+      .default('7d')
+      .refine((val) => /^(\d+([smhdwy])|\d+)$/.test(val.trim()), {
+        message: 'Invalid JWT_EXPIRES_IN format (expected e.g. 7d, 24h, 15m, 3600)',
+      }),
+    DATABASE_PATH: z.string().min(1).default('smart_fishing.db'),
     GEMINI_API_KEY: z.string().default(''),
     CORS_ORIGIN: z.string().default('*'),
-    TRUST_PROXY: z.string().default('false').transform((val) => {
-      if (val === 'true' || val === '1') return true;
-      if (val === 'false' || val === '0') return false;
-      const num = parseInt(val, 10);
-      if (!isNaN(num)) return num;
-      return val;
-    }),
+    TRUST_PROXY: z
+      .string()
+      .default('false')
+      .transform((val) => {
+        const trimmed = val.trim().toLowerCase();
+        if (trimmed === 'true') return true;
+        if (trimmed === 'false') return false;
+        const num = parseInt(trimmed, 10);
+        if (!isNaN(num) && num >= 0) return num;
+        return val.trim();
+      }),
   })
   .superRefine((data, ctx) => {
     const isProd = data.NODE_ENV === 'production';
@@ -62,22 +79,31 @@ const envSchema = z
         });
       }
 
-      if (KNOWN_INSECURE_SECRETS.has(secret)) {
+      if (KNOWN_INSECURE_SECRETS.has(secret.trim())) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['JWT_SECRET'],
           message: 'JWT_SECRET cannot use a known default or insecure development value',
         });
       }
+
+      // In production, CORS_ORIGIN cannot be unrestricted wildcard '*'
+      if (data.CORS_ORIGIN.trim() === '*') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CORS_ORIGIN'],
+          message: 'Unrestricted wildcard CORS_ORIGIN ("*") is prohibited in production. Specify exact trusted origin(s).',
+        });
+      }
     } else if (isTest) {
-      // In test mode, allow whatever is provided or a default test secret
+      // In test mode, allow whatever is provided or fallback to isolated test key
     } else {
       // Development mode
       if (!secret || secret.trim() === '') {
         console.warn(
           '[SECURITY WARNING] JWT_SECRET is not set in development mode. Using a temporary dev secret. DO NOT USE IN PRODUCTION!'
         );
-      } else if (KNOWN_INSECURE_SECRETS.has(secret) || secret.length < 32) {
+      } else if (KNOWN_INSECURE_SECRETS.has(secret.trim()) || secret.length < 32) {
         console.warn(
           '[SECURITY WARNING] Using a weak or well-known JWT_SECRET in development mode. Please set a strong secret.'
         );

@@ -15,6 +15,7 @@ export function createAuthRateLimiter(options?: {
     max,
     standardHeaders: true, // Return standard `RateLimit-*` headers
     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+    validate: { xForwardedForHeader: false }, // Prevent unhandled exceptions when clients send spoofed headers
     message: {
       error: 'Too many authentication attempts from this IP, please try again after 15 minutes',
     },

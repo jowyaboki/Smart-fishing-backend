@@ -23,15 +23,27 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   }
 
   try {
-    const payload = jwt.verify(token, config.jwtSecret) as { sub?: string; email?: string };
-    if (!payload.sub || typeof payload.sub !== 'string') {
-      res.status(401).json({ error: 'Unauthorized: invalid token payload' });
+    // Explicitly restrict algorithm to HS256 to prevent algorithm switching/downgrade attacks (e.g. 'none')
+    const payload = jwt.verify(token, config.jwtSecret, {
+      algorithms: ['HS256'],
+    }) as { sub?: unknown; email?: unknown };
+
+    // Validate claims presence and type
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      typeof payload.sub !== 'string' ||
+      payload.sub.trim() === '' ||
+      typeof payload.email !== 'string' ||
+      payload.email.trim() === ''
+    ) {
+      res.status(401).json({ error: 'Unauthorized: invalid token claims' });
       return;
     }
 
     req.user = {
       id: payload.sub,
-      email: payload.email || '',
+      email: payload.email,
     };
     next();
   } catch (err: any) {
@@ -39,6 +51,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
       res.status(401).json({ error: 'Unauthorized: token has expired' });
       return;
     }
+    // Generic safe error: do not expose internal library error messages or stack traces
     res.status(401).json({ error: 'Unauthorized: invalid or expired token' });
   }
 }

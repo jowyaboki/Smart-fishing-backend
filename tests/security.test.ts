@@ -3,10 +3,12 @@ import request from 'supertest';
 import Database from 'better-sqlite3';
 import jwt from 'jsonwebtoken';
 import express from 'express';
-import { createApp } from '../src/app';
+import cors from 'cors';
+import { createApp, configureCors } from '../src/app';
 import { setDatabaseForTesting, closeDatabase } from '../src/data/database';
 import { config } from '../src/config';
 import { createAuthRateLimiter } from '../src/middlewares/rateLimiter';
+import { errorHandler } from '../src/middlewares/errorHandler';
 
 describe('Security Hardening & Authentication API Tests', () => {
   let app: any;
@@ -76,7 +78,7 @@ describe('Security Hardening & Authentication API Tests', () => {
       const expiredToken = jwt.sign(
         { sub: 'user-expired-id', email: 'expired@test.ma' },
         config.jwtSecret,
-        { expiresIn: '-10s' }
+        { algorithm: 'HS256', expiresIn: '-10s' }
       );
 
       const res = await request(app)
@@ -94,6 +96,52 @@ describe('Security Hardening & Authentication API Tests', () => {
 
       expect(res.status).toBe(401);
       expect(res.body.error).toBe('Unauthorized: invalid or expired token');
+    });
+
+    it('rejects JWT signed with an untrusted algorithm (e.g. "none" attack or asymmetric key)', async () => {
+      // Create a token with 'none' algorithm
+      const noneToken = jwt.sign(
+        { sub: 'user-none-attack', email: 'none@attack.ma' },
+        '',
+        { algorithm: 'none' }
+      );
+
+      const res = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${noneToken}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unauthorized: invalid or expired token');
+    });
+
+    it('rejects JWT missing the "sub" claim', async () => {
+      const tokenWithoutSub = jwt.sign(
+        { email: 'nosub@morocco.ma' },
+        config.jwtSecret,
+        { algorithm: 'HS256' }
+      );
+
+      const res = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${tokenWithoutSub}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unauthorized: invalid token claims');
+    });
+
+    it('rejects JWT missing the "email" claim', async () => {
+      const tokenWithoutEmail = jwt.sign(
+        { sub: 'user-id-only' },
+        config.jwtSecret,
+        { algorithm: 'HS256' }
+      );
+
+      const res = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${tokenWithoutEmail}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unauthorized: invalid token claims');
     });
 
     it('rejects requests with missing or empty Bearer token', async () => {
@@ -118,7 +166,6 @@ describe('Security Hardening & Authentication API Tests', () => {
     });
 
     it('does not expose password_hash in GET /api/v1/auth/me', async () => {
-      // First log in to get a valid token
       const loginRes = await request(app).post('/api/v1/auth/login').send({
         email: 'validsecuser@morocco.ma',
         password: 'securePassword123',
@@ -137,9 +184,8 @@ describe('Security Hardening & Authentication API Tests', () => {
     });
   });
 
-  describe('Rate Limiter Behavior', () => {
+  describe('Rate Limiter Behavior & IP Forwarding', () => {
     it('returns 429 when rate limit threshold is exceeded', async () => {
-      // Create an isolated mini app using createAuthRateLimiter with skipInTests = false
       const testLimiter = createAuthRateLimiter({
         windowMs: 60 * 1000,
         max: 3,
@@ -152,27 +198,57 @@ describe('Security Hardening & Authentication API Tests', () => {
         res.status(200).json({ ok: true });
       });
 
-      // Send 3 allowed requests
       for (let i = 0; i < 3; i++) {
         const res = await request(rateLimitApp).post('/test-limit').send({});
         expect(res.status).toBe(200);
       }
 
-      // 4th request must be rejected with 429
       const blockedRes = await request(rateLimitApp).post('/test-limit').send({});
       expect(blockedRes.status).toBe(429);
       expect(blockedRes.body.error).toContain('Too many authentication attempts');
     });
+
+    it('ignores spoofed X-Forwarded-For headers when trust proxy is disabled', async () => {
+      const testLimiter = createAuthRateLimiter({
+        windowMs: 60 * 1000,
+        max: 2,
+        skipInTests: false,
+      });
+
+      const rateLimitApp = express();
+      // trust proxy is false by default
+      rateLimitApp.set('trust proxy', false);
+      rateLimitApp.use(express.json());
+      rateLimitApp.post('/test-spoof', testLimiter, (_req, res) => {
+        res.status(200).json({ ok: true });
+      });
+
+      // Attacker attempts to spoof X-Forwarded-For with varying fake IPs
+      const res1 = await request(rateLimitApp)
+        .post('/test-spoof')
+        .set('X-Forwarded-For', '198.51.100.1');
+      expect(res1.status).toBe(200);
+
+      const res2 = await request(rateLimitApp)
+        .post('/test-spoof')
+        .set('X-Forwarded-For', '198.51.100.2');
+      expect(res2.status).toBe(200);
+
+      // Third request from the same socket IP should be blocked regardless of fake header
+      const res3 = await request(rateLimitApp)
+        .post('/test-spoof')
+        .set('X-Forwarded-For', '198.51.100.3');
+      expect(res3.status).toBe(429);
+    });
   });
 
-  describe('CORS and Payload Security', () => {
+  describe('CORS, Payload and Error Handling Security', () => {
     it('allows requests without origin header (like Android mobile client)', async () => {
       const res = await request(app).get('/health');
       expect(res.status).toBe(200);
     });
 
-    it('rejects payloads exceeding 1mb limit', async () => {
-      // Generate a payload > 1mb
+    it('rejects payloads exceeding 1mb limit with HTTP 413', async () => {
       const hugeString = 'a'.repeat(1024 * 1024 + 100);
       const res = await request(app)
         .post('/api/v1/auth/login')
@@ -180,6 +256,41 @@ describe('Security Hardening & Authentication API Tests', () => {
 
       expect(res.status).toBe(413);
       expect(res.body.error).toContain('Payload too large');
+    });
+
+    it('handles malformed JSON payloads with HTTP 400', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/login')
+        .set('Content-Type', 'application/json')
+        .send('{"email": "broken-json", ');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Malformed JSON payload');
+    });
+
+    it('enforces authorized CORS origins and rejects unauthorized origins', async () => {
+      const restrictedCors = configureCors('https://allowed.smartfishing.ma,https://admin.smartfishing.ma');
+      const corsApp = express();
+      corsApp.use(cors(restrictedCors));
+      corsApp.get('/cors-test', (_req, res) => res.json({ ok: true }));
+      corsApp.use(errorHandler);
+
+      // 1. Authorized origin
+      const allowedRes = await request(corsApp)
+        .get('/cors-test')
+        .set('Origin', 'https://allowed.smartfishing.ma');
+      expect(allowedRes.status).toBe(200);
+
+      // 2. Request without Origin (Android app)
+      const noOriginRes = await request(corsApp).get('/cors-test');
+      expect(noOriginRes.status).toBe(200);
+
+      // 3. Unauthorized origin
+      const blockedRes = await request(corsApp)
+        .get('/cors-test')
+        .set('Origin', 'https://malicious-website.com');
+      expect(blockedRes.status).toBe(403);
+      expect(blockedRes.body.error).toBe('CORS policy violation: origin not allowed');
     });
   });
 });

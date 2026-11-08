@@ -139,6 +139,7 @@ export class AuthService {
 
   private static generateToken(userId: string, email: string): string {
     return jwt.sign({ sub: userId, email }, config.jwtSecret, {
+      algorithm: 'HS256',
       expiresIn: config.jwtExpiresIn as jwt.SignOptions['expiresIn'],
     });
   }
