@@ -10,6 +10,7 @@ import fishingRoutes from './routes/fishingRoutes';
 import journalRoutes from './routes/journalRoutes';
 import aiRoutes from './routes/aiRoutes';
 import encyclopediaRoutes from './routes/encyclopediaRoutes';
+import hydrographicRoutes from './routes/hydrographicRoutes';
 import { errorHandler } from './middlewares/errorHandler';
 
 export function configureCors(corsOrigin: string = config.corsOrigin): CorsOptions {
@@ -83,6 +84,7 @@ export function createApp(): Express {
   app.use('/api/v1/journal', journalRoutes);
   app.use('/api/v1/ai', aiRoutes);
   app.use('/api/v1/encyclopedia', encyclopediaRoutes);
+  app.use('/api/v1/hydrographic', hydrographicRoutes);
 
   // 404 handler
   app.use((_req, res) => {

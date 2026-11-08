@@ -7,14 +7,18 @@ import {
 } from '../domain/hydrographicModels';
 import { HydrographicRepository } from '../data/hydrographicRepository';
 import { CsvIngestionEngine } from './hydrographic/csvIngestionService';
+import { EmpiricalValidationEngine } from './hydrographic/empiricalValidationService';
+import { TideValidationOptions, TideValidationRun } from '../domain/tideValidationModels';
 
 export class HydrographicService {
   private repo: HydrographicRepository;
   private ingestionEngine: CsvIngestionEngine;
+  private validationEngine: EmpiricalValidationEngine;
 
-  constructor(repo?: HydrographicRepository) {
+  constructor(repo?: HydrographicRepository, validationEngine?: EmpiricalValidationEngine) {
     this.repo = repo || new HydrographicRepository();
     this.ingestionEngine = new CsvIngestionEngine(this.repo);
+    this.validationEngine = validationEngine || new EmpiricalValidationEngine(this.repo);
   }
 
   /**
@@ -66,5 +70,26 @@ export class HydrographicService {
    */
   public getStationQualityReport(stationId: string): HydrographicQualityReport {
     return this.repo.getStationQualityReport(stationId);
+  }
+
+  /**
+   * Runs an empirical tide validation analysis against persisted observations
+   */
+  public async runValidation(options: TideValidationOptions): Promise<TideValidationRun> {
+    return this.validationEngine.validateStation(options);
+  }
+
+  /**
+   * Retrieves past validation runs for a station or all stations
+   */
+  public getValidationRuns(stationId?: string, limit?: number): TideValidationRun[] {
+    return this.repo.getValidationRuns(stationId, limit);
+  }
+
+  /**
+   * Retrieves a single validation run by ID
+   */
+  public getValidationRun(id: string): TideValidationRun | null {
+    return this.repo.getValidationRun(id);
   }
 }
