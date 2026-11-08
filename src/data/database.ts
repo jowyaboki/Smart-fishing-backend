@@ -102,6 +102,60 @@ function initializeSchema(db: DatabaseType): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON fishing_sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_catches_session ON catch_records(session_id);
     CREATE INDEX IF NOT EXISTS idx_catches_user ON catch_records(user_id);
+
+    -- Milestone P2.2: Hydrographic Tide Stations, Observations & Ingestion Batches
+    CREATE TABLE IF NOT EXISTS hydrographic_stations (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      region TEXT NOT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      vertical_datum TEXT NOT NULL,
+      reference_offset_meters REAL DEFAULT 0.0,
+      sensor_type TEXT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS hydrographic_observations (
+      id TEXT PRIMARY KEY,
+      station_id TEXT NOT NULL,
+      timestamp_utc TEXT NOT NULL,
+      water_level_meters REAL NOT NULL,
+      vertical_datum TEXT NOT NULL,
+      raw_value REAL NOT NULL,
+      raw_unit TEXT NOT NULL,
+      quality_tier TEXT NOT NULL DEFAULT 'observed',
+      data_status TEXT NOT NULL DEFAULT 'observation',
+      provenance TEXT NOT NULL,
+      import_batch_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (station_id) REFERENCES hydrographic_stations (id) ON DELETE CASCADE,
+      FOREIGN KEY (import_batch_id) REFERENCES ingestion_batches (id) ON DELETE SET NULL,
+      CONSTRAINT uq_station_timestamp UNIQUE (station_id, timestamp_utc)
+    );
+
+    CREATE TABLE IF NOT EXISTS ingestion_batches (
+      id TEXT PRIMARY KEY,
+      filename TEXT,
+      station_id TEXT,
+      total_rows INTEGER NOT NULL DEFAULT 0,
+      imported_count INTEGER NOT NULL DEFAULT 0,
+      duplicate_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      errors TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (station_id) REFERENCES hydrographic_stations (id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_observations_station_time ON hydrographic_observations(station_id, timestamp_utc DESC);
+    CREATE INDEX IF NOT EXISTS idx_observations_batch ON hydrographic_observations(import_batch_id);
+    CREATE INDEX IF NOT EXISTS idx_batches_station ON ingestion_batches(station_id);
   `);
 }
 
