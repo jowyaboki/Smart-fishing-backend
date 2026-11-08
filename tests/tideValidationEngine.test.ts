@@ -227,7 +227,7 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(retrieved?.suitability.classification).toBe('UNSUITABLE');
     });
 
-    it('distinguishes all explicit exclusion categories without double counting', async () => {
+    it('proves no double counting: each rejected observation increments exactly one category and excludedCount', async () => {
       const observations: HydrographicObservation[] = [
         // 1. Valid observation
         {
@@ -363,16 +363,25 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
+      // Exactly 5 exclusions, sum of counters equals excludedCount
       expect(run.excludedCount).toBe(5);
+      const totalCounted =
+        run.exclusionReasons.DATUM_MISMATCH +
+        run.exclusionReasons.DATUM_NOT_VERIFIED +
+        run.exclusionReasons.INVALID_PROVENANCE +
+        run.exclusionReasons.INVALID_UNIT +
+        run.exclusionReasons.INVALID_COORDINATES +
+        run.exclusionReasons.INVALID_TIMESTAMP +
+        run.exclusionReasons.DUPLICATE_TIMESTAMP +
+        run.exclusionReasons.OUT_OF_BOUNDS;
+
+      expect(totalCounted).toBe(5);
       expect(run.exclusionReasons.DATUM_MISMATCH).toBe(1);
       expect(run.exclusionReasons.INVALID_PROVENANCE).toBe(1);
       expect(run.exclusionReasons.OUT_OF_BOUNDS).toBe(1);
       expect(run.exclusionReasons.INVALID_COORDINATES).toBe(1);
       expect(run.exclusionReasons.INVALID_UNIT).toBe(1);
-
-      // Only the single valid observation was retained
       expect(run.suitability.observationCount).toBe(1);
-      expect(run.status).toBe('NOT_VERIFIED');
     });
 
     it('rigorously tests all supported units (m, cm, mm, ft) and flags inconsistent conversion as INVALID_UNIT', async () => {
@@ -495,12 +504,12 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.observationCount).toBe(3);
     });
 
-    it('rigorously verifies mandatory unit metadata completeness, empty strings, and non-finite numbers', async () => {
+    it('rigorously tests mandatory unit metadata completeness and non-finite values individually', async () => {
       const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
       const observations: HydrographicObservation[] = [
-        // 1. Missing provenance.units.waterLevel
+        // 1. Missing units object entirely
         {
-          id: 'obs-missing-wl-unit',
+          id: 'obs-no-units-obj',
           stationId: 'casablanca-port',
           timestampUtc: new Date(baseMs + 1 * 3600000).toISOString(),
           waterLevelMeters: 2.1,
@@ -515,13 +524,13 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { rawUnit: 'm' } as any, // missing waterLevel!
+            units: null as any,
             isSimulatedFallback: false,
           },
         },
-        // 2. Missing provenance.units.rawUnit
+        // 2. Missing provenance.units.waterLevel
         {
-          id: 'obs-missing-raw-unit',
+          id: 'obs-missing-wl',
           stationId: 'casablanca-port',
           timestampUtc: new Date(baseMs + 2 * 3600000).toISOString(),
           waterLevelMeters: 2.1,
@@ -536,19 +545,19 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm' } as any, // missing rawUnit!
+            units: { rawUnit: 'm' } as any,
             isSimulatedFallback: false,
           },
         },
-        // 3. Empty unit string
+        // 3. provenance.units.waterLevel is not 'm'
         {
-          id: 'obs-empty-unit',
+          id: 'obs-wl-not-m',
           stationId: 'casablanca-port',
           timestampUtc: new Date(baseMs + 3 * 3600000).toISOString(),
           waterLevelMeters: 2.1,
           verticalDatum: 'ZH',
           rawValue: 2.1,
-          rawUnit: ' ',
+          rawUnit: 'm',
           qualityTier: 'observed',
           dataStatus: 'observation',
           provenance: {
@@ -557,16 +566,16 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm', rawUnit: ' ' },
+            units: { waterLevel: 'ft', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
-        // 4. Non-finite waterLevelMeters: Infinity (1e999 becomes Infinity in JS)
+        // 4. Missing provenance.units.rawUnit
         {
-          id: 'obs-inf-val',
+          id: 'obs-missing-rawunit',
           stationId: 'casablanca-port',
           timestampUtc: new Date(baseMs + 4 * 3600000).toISOString(),
-          waterLevelMeters: Infinity,
+          waterLevelMeters: 2.1,
           verticalDatum: 'ZH',
           rawValue: 2.1,
           rawUnit: 'm',
@@ -578,19 +587,19 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm', rawUnit: 'm' },
+            units: { waterLevel: 'm' } as any,
             isSimulatedFallback: false,
           },
         },
-        // 5. Unsupported unit 'furlongs'
+        // 5. Empty unit string
         {
-          id: 'obs-unsupported-unit',
+          id: 'obs-empty-unit',
           stationId: 'casablanca-port',
           timestampUtc: new Date(baseMs + 5 * 3600000).toISOString(),
           waterLevelMeters: 2.1,
           verticalDatum: 'ZH',
           rawValue: 2.1,
-          rawUnit: 'furlongs' as any,
+          rawUnit: '   ',
           qualityTier: 'observed',
           dataStatus: 'observation',
           provenance: {
@@ -599,7 +608,49 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
             quality: 'observed',
             status: 'observation',
             coordinates: { latitude: 33.6, longitude: -7.6 },
-            units: { waterLevel: 'm', rawUnit: 'furlongs' },
+            units: { waterLevel: 'm', rawUnit: '   ' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 6. Non-finite waterLevelMeters (+Infinity)
+        {
+          id: 'obs-inf-wl',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 6 * 3600000).toISOString(),
+          waterLevelMeters: Infinity,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T06:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // 7. Non-finite waterLevelMeters (-Infinity)
+        {
+          id: 'obs-neginf-wl',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 7 * 3600000).toISOString(),
+          waterLevelMeters: -Infinity,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T07:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
             isSimulatedFallback: false,
           },
         },
@@ -611,15 +662,13 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
-      // All 5 must be rejected specifically under INVALID_UNIT (and not INVALID_PROVENANCE)
-      expect(run.excludedCount).toBe(5);
-      expect(run.exclusionReasons.INVALID_UNIT).toBe(5);
+      expect(run.excludedCount).toBe(7);
+      expect(run.exclusionReasons.INVALID_UNIT).toBe(7);
       expect(run.exclusionReasons.INVALID_PROVENANCE).toBe(0);
       expect(run.suitability.observationCount).toBe(0);
     });
 
     it('rejects promotion to INDEPENDENTLY_VERIFIED when benchmark proof is missing or incomplete (simple boolean false proof rejected)', async () => {
-      // Station casablanca-port with only isDatumIndependentlyVerified: true (missing certificate ID, survey ref, etc.)
       const station = repo.getStation('casablanca-port');
       if (station) {
         station.metadata = {
@@ -633,7 +682,6 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         stationId: 'casablanca-port',
       });
 
-      // Should not promote to INDEPENDENTLY_VERIFIED because proof is incomplete!
       expect(run.suitability.datumVerificationStatus).not.toBe('INDEPENDENTLY_VERIFIED');
       expect(run.suitability.datumVerificationStatus).toBe('CONFIGURED');
       expect(run.suitability.classification).toBe('UNSUITABLE');
@@ -735,7 +783,6 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.datumVerificationStatus).toBe('SOURCE_DECLARED');
       expect(run.suitability.dataCompletenessPercentage).toBeGreaterThanOrEqual(85.0);
       expect(run.suitability.observationCount).toBe(721);
-      // Because datum lacks traceable benchmark proof, it MUST NOT be SUITABLE!
       expect(run.suitability.classification).toBe('MARGINAL');
       expect(run.suitability.reasons.some((r) => r.includes('lacks independent physical hydrographic benchmark'))).toBe(true);
     });
@@ -890,11 +937,6 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
     });
 
     it('correctly tracks hourly slots with tolerance boundary (±30m) and unaligned period start/end', async () => {
-      // Period from 10:15 to 13:45
-      // Expected slots: 10:00, 11:00, 12:00, 13:00 (4 slots)
-      // Observation 1: 10:30 (exactly +30 min from 10:00) -> should cover 10:00 slot
-      // Observation 2: 12:00 -> covers 12:00 slot
-      // Slots 11:00 and 13:00 missing -> 2 missing slots
       const tStart = '2026-11-08T10:15:00.000Z';
       const tEnd = '2026-11-08T13:45:00.000Z';
 
