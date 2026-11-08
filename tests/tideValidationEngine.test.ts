@@ -8,6 +8,7 @@ import { EmpiricalValidationEngine } from '../src/services/hydrographic/empirica
 import {
   calculatePeakValidationMetrics,
   calculateStatisticalMetrics,
+  detectLocalExtrema,
   DiscreteWaterLevelPoint,
 } from '../src/services/hydrographic/validationStatistics';
 import {
@@ -126,6 +127,79 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(() => calculateStatisticalMetrics([])).toThrow(
         'Cannot calculate statistical metrics for an empty dataset'
       );
+    });
+
+    it('rejects non-finite inputs and arithmetic overflow in statistical metrics', () => {
+      // 1. NaN in predicted water level
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: 2.0,
+            predictedWaterLevelMeters: NaN,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('Non-finite predicted water level');
+
+      // 2. Infinity in observed water level
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: Infinity,
+            predictedWaterLevelMeters: 2.0,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('Non-finite observed water level');
+
+      // 3. Overflow in squared error calculation (1e160 * 1e160 overflows to Infinity)
+      expect(() =>
+        calculateStatisticalMetrics([
+          {
+            timestampUtc: '2026-11-08T00:00:00Z',
+            observedWaterLevelMeters: -1e160,
+            predictedWaterLevelMeters: 1e160,
+            residualMeters: 0,
+            verticalDatum: 'ZH',
+            qualityTier: 'observed',
+          },
+        ])
+      ).toThrow('overflow in squared error');
+    });
+
+    it('validates extrema points and peak metric parameters for finite numbers and non-overflow', () => {
+      // 1. Extrema detector rejects non-finite points
+      const dirtyPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 3600000, heightMeters: Infinity },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 7200000, heightMeters: 2.0 },
+      ];
+      expect(detectLocalExtrema(dirtyPoints)).toEqual([]);
+
+      // 2. Peak metrics rejects invalid matching window
+      const validPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 0, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 3600000, heightMeters: 2.0 },
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 7200000, heightMeters: 1.0 },
+      ];
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          maxMatchingWindowMinutes: NaN,
+        })
+      ).toThrow('Invalid maxMatchingWindowMinutes');
+
+      // 3. Peak metrics rejects invalid medianObsIntervalMinutes
+      expect(() =>
+        calculatePeakValidationMetrics(validPoints, validPoints, {
+          medianObsIntervalMinutes: -10,
+        })
+      ).toThrow('Invalid medianObsIntervalMinutes');
     });
 
     it('detects tidal extrema peaks on independent predictive series and measures height & timing errors', () => {

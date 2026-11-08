@@ -364,6 +364,9 @@ export class EmpiricalValidationEngine {
       const independentPredictedPoints: DiscreteWaterLevelPoint[] = [];
 
       for (let t = startMs; t <= endMs; t += stepMs) {
+        if (!Number.isFinite(t)) {
+          continue;
+        }
         const pointDate = new Date(t);
         const pred = await this.tideProvider.getTidePrediction({
           latitude: station.latitude,
@@ -371,10 +374,17 @@ export class EmpiricalValidationEngine {
           targetDate: pointDate,
         });
 
+        const predHeight = pred.currentTide?.heightMeters;
+        if (typeof predHeight !== 'number' || !Number.isFinite(predHeight)) {
+          throw new Error(
+            `[EmpiricalValidationEngine] Harmonic provider produced non-finite predicted water level (${predHeight}) at timestamp ${pointDate.toISOString()}`
+          );
+        }
+
         independentPredictedPoints.push({
           timestampUtc: pointDate.toISOString(),
           timeMs: t,
-          heightMeters: pred.currentTide.heightMeters,
+          heightMeters: predHeight,
         });
       }
 

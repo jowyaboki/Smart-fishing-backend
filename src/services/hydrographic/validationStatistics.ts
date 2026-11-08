@@ -20,23 +20,34 @@ import {
 export function calculateStatisticalMetrics(
   pairs: ValidationObservationPair[]
 ): StatisticalMetrics {
+  if (!Array.isArray(pairs)) {
+    throw new Error('Input pairs must be an array');
+  }
+
   const n = pairs.length;
   if (n === 0) {
     throw new Error('Cannot calculate statistical metrics for an empty dataset');
   }
 
-  // Verify all input numeric values are finite numbers
+  // Pre-validate all input numeric values with Number.isFinite()
   for (let i = 0; i < n; i++) {
     const p = pairs[i];
+    if (!p || typeof p !== 'object') {
+      throw new Error(`Invalid observation pair at index ${i}`);
+    }
     if (
-      !Number.isFinite(p.predictedWaterLevelMeters) ||
+      typeof p.predictedWaterLevelMeters !== 'number' ||
+      !Number.isFinite(p.predictedWaterLevelMeters)
+    ) {
+      throw new Error(`Non-finite predicted water level at index ${i}: ${p.predictedWaterLevelMeters}`);
+    }
+    if (
+      typeof p.observedWaterLevelMeters !== 'number' ||
       !Number.isFinite(p.observedWaterLevelMeters)
     ) {
-      throw new Error(`Non-finite numeric value in observation pair at index ${i}`);
+      throw new Error(`Non-finite observed water level at index ${i}: ${p.observedWaterLevelMeters}`);
     }
   }
-
-  const errors = pairs.map((p) => p.predictedWaterLevelMeters - p.observedWaterLevelMeters);
 
   let sumError = 0;
   let sumAbsError = 0;
@@ -44,16 +55,33 @@ export function calculateStatisticalMetrics(
   let maxAbs = -Infinity;
   let minAbs = Infinity;
 
+  const errors: number[] = new Array(n);
+
   for (let i = 0; i < n; i++) {
-    const err = errors[i];
+    const p = pairs[i];
+    const err = p.predictedWaterLevelMeters - p.observedWaterLevelMeters;
     if (!Number.isFinite(err)) {
       throw new Error(`Non-finite residual calculated at index ${i}`);
     }
+    errors[i] = err;
 
     const absErr = Math.abs(err);
+    if (!Number.isFinite(absErr)) {
+      throw new Error(`Non-finite absolute residual calculated at index ${i}`);
+    }
+
+    const sqErr = err * err;
+    if (!Number.isFinite(sqErr) || sqErr > Number.MAX_VALUE) {
+      throw new Error(`Arithmetic overflow in squared error calculation at index ${i}`);
+    }
+
     sumError += err;
     sumAbsError += absErr;
-    sumSquaredError += err * err;
+    sumSquaredError += sqErr;
+
+    if (!Number.isFinite(sumError) || !Number.isFinite(sumAbsError) || !Number.isFinite(sumSquaredError)) {
+      throw new Error(`Arithmetic overflow in running sums accumulation at index ${i}`);
+    }
 
     if (absErr > maxAbs) maxAbs = absErr;
     if (absErr < minAbs) minAbs = absErr;
@@ -61,20 +89,34 @@ export function calculateStatisticalMetrics(
 
   const bias = sumError / n;
   const mae = sumAbsError / n;
-  const rmse = Math.sqrt(sumSquaredError / n);
+  const meanSquaredError = sumSquaredError / n;
+
+  if (!Number.isFinite(bias) || !Number.isFinite(mae) || !Number.isFinite(meanSquaredError)) {
+    throw new Error('Arithmetic overflow in mean error calculation');
+  }
+
+  const rmse = Math.sqrt(meanSquaredError);
+  if (!Number.isFinite(rmse)) {
+    throw new Error('Arithmetic overflow in RMSE square root calculation');
+  }
 
   // Standard deviation of errors relative to the mean error (bias)
   let sumSquaredDeviation = 0;
   for (let i = 0; i < n; i++) {
     const diff = errors[i] - bias;
-    sumSquaredDeviation += diff * diff;
+    const diffSq = diff * diff;
+    if (!Number.isFinite(diffSq)) {
+      throw new Error(`Arithmetic overflow in squared deviation at index ${i}`);
+    }
+    sumSquaredDeviation += diffSq;
+    if (!Number.isFinite(sumSquaredDeviation)) {
+      throw new Error(`Arithmetic overflow in sum of squared deviations at index ${i}`);
+    }
   }
+
   const standardDeviation = Math.sqrt(sumSquaredDeviation / n);
 
   if (
-    !Number.isFinite(bias) ||
-    !Number.isFinite(mae) ||
-    !Number.isFinite(rmse) ||
     !Number.isFinite(standardDeviation) ||
     !Number.isFinite(maxAbs) ||
     !Number.isFinite(minAbs)
@@ -83,14 +125,32 @@ export function calculateStatisticalMetrics(
   }
 
   // Round metrics to 4 decimal places for clean floating point representation
+  const roundedBias = Math.round(bias * 10000) / 10000;
+  const roundedMae = Math.round(mae * 10000) / 10000;
+  const roundedRmse = Math.round(rmse * 10000) / 10000;
+  const roundedStdDev = Math.round(standardDeviation * 10000) / 10000;
+  const roundedMaxAbs = Math.round(maxAbs * 10000) / 10000;
+  const roundedMinAbs = Math.round(minAbs * 10000) / 10000;
+
+  if (
+    !Number.isFinite(roundedBias) ||
+    !Number.isFinite(roundedMae) ||
+    !Number.isFinite(roundedRmse) ||
+    !Number.isFinite(roundedStdDev) ||
+    !Number.isFinite(roundedMaxAbs) ||
+    !Number.isFinite(roundedMinAbs)
+  ) {
+    throw new Error('Rounding produced non-finite metric output');
+  }
+
   return {
     totalPairs: n,
-    biasMeters: Math.round(bias * 10000) / 10000,
-    maeMeters: Math.round(mae * 10000) / 10000,
-    rmseMeters: Math.round(rmse * 10000) / 10000,
-    standardDeviationMeters: Math.round(standardDeviation * 10000) / 10000,
-    maxAbsoluteErrorMeters: Math.round(maxAbs * 10000) / 10000,
-    minAbsoluteErrorMeters: Math.round(minAbs * 10000) / 10000,
+    biasMeters: roundedBias,
+    maeMeters: roundedMae,
+    rmseMeters: roundedRmse,
+    standardDeviationMeters: roundedStdDev,
+    maxAbsoluteErrorMeters: roundedMaxAbs,
+    minAbsoluteErrorMeters: roundedMinAbs,
   };
 }
 
@@ -109,25 +169,37 @@ export interface ExtremaPoint {
 
 /**
  * Detects local extrema (high and low peaks) from discrete water level time-series.
- * Requires windowing or 3-point local extrema checking (y[i-1] < y[i] > y[i+1]).
+ * Validates finite timestamps and heights before processing.
  */
 export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPoint[] {
-  if (points.length < 3) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return [];
+  }
+
+  // Filter out any invalid points with non-finite timestamp or height
+  const validPoints = points.filter(
+    (p) =>
+      p &&
+      typeof p.timeMs === 'number' &&
+      Number.isFinite(p.timeMs) &&
+      typeof p.heightMeters === 'number' &&
+      Number.isFinite(p.heightMeters) &&
+      typeof p.timestampUtc === 'string' &&
+      p.timestampUtc.trim().length > 0
+  );
+
+  if (validPoints.length < 3) {
     return [];
   }
 
   // Ensure chronological order
-  const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
+  const sorted = [...validPoints].sort((a, b) => a.timeMs - b.timeMs);
   const extrema: ExtremaPoint[] = [];
 
   for (let i = 1; i < sorted.length - 1; i++) {
     const prev = sorted[i - 1].heightMeters;
     const curr = sorted[i].heightMeters;
     const next = sorted[i + 1].heightMeters;
-
-    if (!Number.isFinite(prev) || !Number.isFinite(curr) || !Number.isFinite(next)) {
-      continue;
-    }
 
     if (curr > prev && curr >= next) {
       extrema.push({
@@ -152,11 +224,6 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
 /**
  * Calculates peak validation metrics by comparing observed peaks and independently detected
  * predicted peaks within a matching tolerance window (e.g. ±180 minutes).
- *
- * Avoids multiple associations (greedy 1-to-1 minimum time difference matching).
- * Calculates height error: predicted - observed
- * Calculates timing error: predictedTime - observedTime (in minutes)
- * Evaluates whether observation sampling resolution allows scientifically defensible timing measurement.
  */
 export function calculatePeakValidationMetrics(
   observedPoints: DiscreteWaterLevelPoint[],
@@ -167,25 +234,46 @@ export function calculatePeakValidationMetrics(
   } = {}
 ): PeakValidationMetrics {
   const maxMatchingWindowMinutes = options.maxMatchingWindowMinutes ?? 180;
+  if (!Number.isFinite(maxMatchingWindowMinutes) || maxMatchingWindowMinutes <= 0) {
+    throw new Error(`Invalid maxMatchingWindowMinutes: ${maxMatchingWindowMinutes}`);
+  }
+
+  if (
+    options.medianObsIntervalMinutes !== undefined &&
+    (!Number.isFinite(options.medianObsIntervalMinutes) || options.medianObsIntervalMinutes <= 0)
+  ) {
+    throw new Error(`Invalid medianObsIntervalMinutes: ${options.medianObsIntervalMinutes}`);
+  }
+
   const observedExtrema = detectLocalExtrema(observedPoints);
   const predictedExtrema = detectLocalExtrema(predictedPoints);
 
   // Compute observed sampling interval if not provided
   let samplingIntervalMinutes = options.medianObsIntervalMinutes ?? 60;
-  if (observedPoints.length >= 2 && !options.medianObsIntervalMinutes) {
-    const diffs: number[] = [];
-    const sortedObs = [...observedPoints].sort((a, b) => a.timeMs - b.timeMs);
-    for (let i = 1; i < Math.min(sortedObs.length, 50); i++) {
-      diffs.push((sortedObs[i].timeMs - sortedObs[i - 1].timeMs) / (60 * 1000));
+  if (observedPoints && observedPoints.length >= 2 && !options.medianObsIntervalMinutes) {
+    const validObs = observedPoints.filter(
+      (p) => p && typeof p.timeMs === 'number' && Number.isFinite(p.timeMs)
+    );
+    if (validObs.length >= 2) {
+      const diffs: number[] = [];
+      const sortedObs = [...validObs].sort((a, b) => a.timeMs - b.timeMs);
+      for (let i = 1; i < Math.min(sortedObs.length, 50); i++) {
+        const diffMin = (sortedObs[i].timeMs - sortedObs[i - 1].timeMs) / (60 * 1000);
+        if (Number.isFinite(diffMin) && diffMin > 0) {
+          diffs.push(diffMin);
+        }
+      }
+      if (diffs.length > 0) {
+        diffs.sort((a, b) => a - b);
+        samplingIntervalMinutes = diffs[Math.floor(diffs.length / 2)] || 60;
+      }
     }
-    diffs.sort((a, b) => a - b);
-    samplingIntervalMinutes = diffs[Math.floor(diffs.length / 2)] || 60;
   }
 
-  // Scientifically defensible timing resolution:
-  // For semi-diurnal tides with gentle curvature near slack water, discrete observation
-  // sampling interval must be <= 15 minutes to resolve peak timing within standard hydrographic uncertainty (±10 min).
-  // Hourly data (60 min) introduces inherent discretisation uncertainty of up to ±30 minutes.
+  if (!Number.isFinite(samplingIntervalMinutes) || samplingIntervalMinutes <= 0) {
+    samplingIntervalMinutes = 60;
+  }
+
   const isTimingResolutionScientificallyDefensible = samplingIntervalMinutes <= 15;
   const timingResolutionDisclaimer = isTimingResolutionScientificallyDefensible
     ? undefined
@@ -210,7 +298,7 @@ export function calculatePeakValidationMetrics(
       if (pred.type !== obs.type) continue;
 
       const timeDiffMs = Math.abs(pred.timeMs - obs.timeMs);
-      if (timeDiffMs <= maxWindowMs && timeDiffMs < minTimeDiffMs) {
+      if (Number.isFinite(timeDiffMs) && timeDiffMs <= maxWindowMs && timeDiffMs < minTimeDiffMs) {
         minTimeDiffMs = timeDiffMs;
         bestPredIndex = j;
       }
@@ -272,16 +360,48 @@ export function calculatePeakValidationMetrics(
   let sumTimingSqError = 0;
 
   for (const peak of matchedPeaks) {
-    sumHeightError += peak.heightErrorMeters;
-    sumHeightSqError += peak.heightErrorMeters * peak.heightErrorMeters;
-    sumTimingError += peak.timingErrorMinutes;
-    sumTimingSqError += peak.timingErrorMinutes * peak.timingErrorMinutes;
+    const hErr = peak.heightErrorMeters;
+    const tErr = peak.timingErrorMinutes;
+
+    if (!Number.isFinite(hErr) || !Number.isFinite(tErr)) {
+      throw new Error('Non-finite error in matched peak array');
+    }
+
+    const hSq = hErr * hErr;
+    const tSq = tErr * tErr;
+
+    if (!Number.isFinite(hSq) || !Number.isFinite(tSq)) {
+      throw new Error('Overflow in peak squared error calculation');
+    }
+
+    sumHeightError += hErr;
+    sumHeightSqError += hSq;
+    sumTimingError += tErr;
+    sumTimingSqError += tSq;
+
+    if (
+      !Number.isFinite(sumHeightError) ||
+      !Number.isFinite(sumHeightSqError) ||
+      !Number.isFinite(sumTimingError) ||
+      !Number.isFinite(sumTimingSqError)
+    ) {
+      throw new Error('Overflow in peak error sums accumulation');
+    }
   }
 
   const meanHeightError = sumHeightError / n;
   const heightRmse = Math.sqrt(sumHeightSqError / n);
   const meanTimingError = sumTimingError / n;
   const timingRmse = Math.sqrt(sumTimingSqError / n);
+
+  if (
+    !Number.isFinite(meanHeightError) ||
+    !Number.isFinite(heightRmse) ||
+    !Number.isFinite(meanTimingError) ||
+    !Number.isFinite(timingRmse)
+  ) {
+    throw new Error('Non-finite peak validation metric computed');
+  }
 
   return {
     totalPeaksDetected: observedExtrema.length + predictedExtrema.length,
