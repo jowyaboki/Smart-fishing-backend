@@ -668,6 +668,79 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
       expect(run.suitability.observationCount).toBe(0);
     });
 
+    it('verifies exclusion accounting invariant with multiple simultaneous defects and single-assignment', async () => {
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const observations: HydrographicObservation[] = [
+        // Observation with MULTIPLE simultaneous defects:
+        // Datum mismatch (LAT instead of ZH) AND invalid unit ('furlongs') AND bad coords AND out of bounds
+        // Must be rejected at the first checkpoint and increment exactly ONE counter (DATUM_MISMATCH)
+        {
+          id: 'obs-multi-defect-1',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 1 * 3600000).toISOString(),
+          waterLevelMeters: 55.0, // out of bounds
+          verticalDatum: 'LAT', // datum mismatch
+          rawValue: 55.0,
+          rawUnit: 'furlongs' as any, // invalid unit
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T01:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 0.0, longitude: 0.0 }, // invalid coords
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        // Observation with multiple unit & coordinate defects (different timestamp so both get persisted)
+        {
+          id: 'obs-multi-defect-2',
+          stationId: 'casablanca-port',
+          timestampUtc: new Date(baseMs + 2 * 3600000).toISOString(),
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'invalid' as any, // invalid unit (should be rejected as INVALID_UNIT before checking coordinates)
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T02:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 0.0, longitude: 0.0 }, // also invalid coordinates
+            units: { waterLevel: 'm', rawUnit: 'invalid' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+
+      repo.saveObservationsBatch(observations);
+
+      const run = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+      });
+
+      expect(run.excludedCount).toBe(2);
+      expect(run.exclusionReasons.DATUM_MISMATCH).toBe(1);
+      expect(run.exclusionReasons.INVALID_UNIT).toBe(1);
+
+      // Verify the invariant: excludedCount === sum(observation exclusion counters)
+      const observationExclusionSum =
+        run.exclusionReasons.DATUM_MISMATCH +
+        run.exclusionReasons.DATUM_NOT_VERIFIED +
+        run.exclusionReasons.INVALID_PROVENANCE +
+        run.exclusionReasons.INVALID_UNIT +
+        run.exclusionReasons.INVALID_COORDINATES +
+        run.exclusionReasons.INVALID_TIMESTAMP +
+        run.exclusionReasons.DUPLICATE_TIMESTAMP +
+        run.exclusionReasons.OUT_OF_BOUNDS;
+
+      expect(run.excludedCount).toBe(observationExclusionSum);
+    });
+
     it('rejects promotion to INDEPENDENTLY_VERIFIED when benchmark proof is missing or incomplete (simple boolean false proof rejected)', async () => {
       const station = repo.getStation('casablanca-port');
       if (station) {

@@ -110,7 +110,7 @@ export class EmpiricalValidationEngine {
       excludedCount++;
     };
 
-    // 2. Validate observations with strict, mutually exclusive single-step classification
+    // 2. Validate observations with strict, mutually exclusive single-assignment classification
     for (const obs of observations) {
       // 2.1 Timestamp format validation
       if (!obs.timestampUtc || typeof obs.timestampUtc !== 'string' || !obs.timestampUtc.endsWith('Z')) {
@@ -165,17 +165,19 @@ export class EmpiricalValidationEngine {
         continue;
       }
 
-      // provenance.units.rawUnit must be explicitly present, non-empty, and match normalized rawUnit
-      if (
-        typeof provUnits.rawUnit !== 'string' ||
-        provUnits.rawUnit.trim() === '' ||
-        provUnits.rawUnit.trim().toLowerCase() !== rawUnitClean
-      ) {
+      // provenance.units.rawUnit must be explicitly present, non-empty, supported, and match normalized rawUnit
+      if (typeof provUnits.rawUnit !== 'string' || provUnits.rawUnit.trim() === '') {
         exclude('INVALID_UNIT');
         continue;
       }
 
-      // c) Finite numeric verification on observation values
+      const provRawUnitClean = provUnits.rawUnit.trim().toLowerCase();
+      if (!['m', 'cm', 'mm', 'ft'].includes(provRawUnitClean) || provRawUnitClean !== rawUnitClean) {
+        exclude('INVALID_UNIT');
+        continue;
+      }
+
+      // c) Finite numeric verification on observation values using Number.isFinite()
       if (
         typeof obs.rawValue !== 'number' ||
         !Number.isFinite(obs.rawValue) ||
@@ -326,8 +328,26 @@ export class EmpiricalValidationEngine {
       slotToleranceMinutes: hourlySlotToleranceMinutes,
     });
 
-    // Populate INSUFFICIENT_COVERAGE with missing hourly slots count
+    // Populate INSUFFICIENT_COVERAGE with missing hourly slots count (distinct from rejected observations)
     exclusionReasons.INSUFFICIENT_COVERAGE = suitability.missingHourlySlots;
+
+    // Runtime Accounting Invariant:
+    // excludedCount must strictly equal the sum of rejected observation categories (excluding INSUFFICIENT_COVERAGE)
+    const observationExclusionSum =
+      exclusionReasons.DATUM_MISMATCH +
+      exclusionReasons.DATUM_NOT_VERIFIED +
+      exclusionReasons.INVALID_PROVENANCE +
+      exclusionReasons.INVALID_UNIT +
+      exclusionReasons.INVALID_COORDINATES +
+      exclusionReasons.INVALID_TIMESTAMP +
+      exclusionReasons.DUPLICATE_TIMESTAMP +
+      exclusionReasons.OUT_OF_BOUNDS;
+
+    if (excludedCount !== observationExclusionSum) {
+      throw new Error(
+        `[EmpiricalValidationEngine] Exclusion accounting invariant violated: excludedCount (${excludedCount}) !== sum of observation exclusions (${observationExclusionSum})`
+      );
+    }
 
     // 6. Calculate statistical metrics on aligned pairs
     let statistics = null;
@@ -383,7 +403,7 @@ export class EmpiricalValidationEngine {
       exclusionReasons,
       isCalibrationEnabled: false, // Safeguard strictly locked to false
       metadata: {
-        engineVersion: '2.4.4',
+        engineVersion: '2.4.5',
         predictionProviderId: this.tideProvider.providerId,
         verticalDatum: station.verticalDatum,
         datumVerificationStatus,
