@@ -160,8 +160,9 @@ export class MoroccanHarmonicTideProvider implements ITidePredictionProvider {
         units: { ...DEFAULT_MARINE_UNITS },
         isSimulatedFallback: false,
         confidenceScore: 0.85,
-        disclaimer: `Astronomical harmonic tide forecast calibrated to Moroccan reference port '${station.name}' (~${distanceKm}km). Meteorological storm surges not included.`,
+        disclaimer: `Astronomical harmonic tide forecast calculated from gravitational semi-diurnal harmonics calibrated to Moroccan reference port '${station.name}' (~${distanceKm}km). Theoretical astronomical calculation; does not include meteorological storm surges, barometric anomalies, or real-time tide gauge telemetry.`,
       },
+      disclaimer: `Theoretical astronomical calculation calibrated to '${station.name}'. Not for navigation.`,
     };
   }
 
