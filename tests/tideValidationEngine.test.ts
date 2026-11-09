@@ -281,20 +281,83 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         ])
       ).toThrow('Invalid ISO 8601 UTC timestamp');
 
-      // 5. Impossible Feb 29 in a non-leap year (2026)
+      // 5. Impossible second (e.g. Second 60)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T00:00:60Z', timeMs: new Date('2026-01-01T00:00:60Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 6. Impossible Feb 29 in a non-leap year (2026)
       expect(() =>
         detectLocalExtrema([
           { timestampUtc: '2026-02-29T12:00:00Z', timeMs: new Date('2026-02-29T12:00:00Z').getTime(), heightMeters: 1.0 },
         ])
       ).toThrow('Invalid ISO 8601 UTC timestamp');
 
-      // 6. Valid leap year date (2024-02-29) and fractional-second precision are accepted
-      const leapIso = '2024-02-29T12:30:45.123Z';
+      // 7. Year 0000 and years 0001-0099 supported without Date.UTC(0..99) distortion
+      const y0Iso = '0000-01-01T00:00:00Z';
+      const y0Date = new Date(0);
+      y0Date.setUTCFullYear(0, 0, 1);
+      y0Date.setUTCHours(0, 0, 0, 0);
+      expect(isValidCalendarUtcIso(y0Iso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: y0Iso, timeMs: y0Date.getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      const y50Iso = '0050-06-15T12:00:00Z';
+      const y50Date = new Date(0);
+      y50Date.setUTCFullYear(50, 5, 15);
+      y50Date.setUTCHours(12, 0, 0, 0);
+      expect(isValidCalendarUtcIso(y50Iso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: y50Iso, timeMs: y50Date.getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 8. Normal modern date
+      const modernIso = '2026-11-08T14:30:00Z';
+      const modernMs = new Date(modernIso).getTime();
+      expect(isValidCalendarUtcIso(modernIso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: modernIso, timeMs: modernMs, heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 9. Valid leap year date (2024-02-29)
+      const leapIso = '2024-02-29T12:00:00Z';
       const leapMs = new Date(leapIso).getTime();
       expect(isValidCalendarUtcIso(leapIso)).toBe(true);
       expect(
         detectLocalExtrema([
           { timestampUtc: leapIso, timeMs: leapMs, heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 10. Fractional seconds with 1, 2, and 3 digits
+      const frac1 = '2026-11-08T00:00:00.1Z';
+      const frac2 = '2026-11-08T00:00:00.12Z';
+      const frac3 = '2026-11-08T00:00:00.123Z';
+      expect(isValidCalendarUtcIso(frac1)).toBe(true);
+      expect(isValidCalendarUtcIso(frac2)).toBe(true);
+      expect(isValidCalendarUtcIso(frac3)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac1, timeMs: new Date(frac1).getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac2, timeMs: new Date(frac2).getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac3, timeMs: new Date(frac3).getTime(), heightMeters: 1.0 },
         ])
       ).toEqual([]);
 

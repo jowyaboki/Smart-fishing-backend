@@ -182,6 +182,15 @@ const ISO_8601_UTC_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.(
  * Validates whether an ISO 8601 UTC string is not only syntactically valid,
  * but represents a real calendar date and valid time components (including leap year rules).
  */
+/**
+ * Validates whether an ISO 8601 UTC string is not only syntactically valid,
+ * but represents a real calendar date and valid time components (including leap year rules).
+ *
+ * Supported Year Range:
+ * Formally supports years 0000 through 9999.
+ * Uses new Date(0) with explicit setUTCFullYear(year, month - 1, day) and setUTCHours()
+ * to eliminate the legacy JavaScript Date.UTC(0..99) mapping to 1900..1999.
+ */
 export function isValidCalendarUtcIso(isoString: string): boolean {
   if (typeof isoString !== 'string') return false;
   const match = ISO_8601_UTC_REGEX.exec(isoString);
@@ -195,13 +204,18 @@ export function isValidCalendarUtcIso(isoString: string): boolean {
   const second = parseInt(match[6], 10);
   const ms = match[8] ? parseInt(match[8].padEnd(3, '0'), 10) : 0;
 
+  if (year < 0 || year > 9999) return false;
   if (month < 1 || month > 12) return false;
   if (hour < 0 || hour > 23) return false;
   if (minute < 0 || minute > 59) return false;
   if (second < 0 || second > 59) return false;
   if (ms < 0 || ms > 999) return false;
 
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+  // Use setUTCFullYear on an epoch date to avoid Date.UTC(year 0..99) legacy mapping to 1900..1999
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, ms);
+
   if (
     date.getUTCFullYear() !== year ||
     date.getUTCMonth() !== month - 1 ||
