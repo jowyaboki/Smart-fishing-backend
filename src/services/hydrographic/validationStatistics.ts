@@ -176,26 +176,89 @@ export interface ExtremaPoint {
  * - Detects duplicate timestamps.
  * Throws explicit descriptive errors on any invalid point rather than silently corrupting results.
  */
+const ISO_8601_UTC_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.(\d{1,3}))?Z$/;
+
+/**
+ * Validates whether an ISO 8601 UTC string is not only syntactically valid,
+ * but represents a real calendar date and valid time components (including leap year rules).
+ */
+/**
+ * Validates whether an ISO 8601 UTC string is not only syntactically valid,
+ * but represents a real calendar date and valid time components (including leap year rules).
+ *
+ * Supported Year Range:
+ * Formally supports years 0000 through 9999.
+ * Uses new Date(0) with explicit setUTCFullYear(year, month - 1, day) and setUTCHours()
+ * to eliminate the legacy JavaScript Date.UTC(0..99) mapping to 1900..1999.
+ */
+export function isValidCalendarUtcIso(isoString: string): boolean {
+  if (typeof isoString !== 'string') return false;
+  const match = ISO_8601_UTC_REGEX.exec(isoString);
+  if (!match) return false;
+
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  const hour = parseInt(match[4], 10);
+  const minute = parseInt(match[5], 10);
+  const second = parseInt(match[6], 10);
+  const ms = match[8] ? parseInt(match[8].padEnd(3, '0'), 10) : 0;
+
+  if (year < 0 || year > 9999) return false;
+  if (month < 1 || month > 12) return false;
+  if (hour < 0 || hour > 23) return false;
+  if (minute < 0 || minute > 59) return false;
+  if (second < 0 || second > 59) return false;
+  if (ms < 0 || ms > 999) return false;
+
+  // Use setUTCFullYear on an epoch date to avoid Date.UTC(year 0..99) legacy mapping to 1900..1999
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, ms);
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second ||
+    date.getUTCMilliseconds() !== ms
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Detects local extrema (high and low peaks) from discrete water level time-series.
+ * Replaces permissive filtering with an explicit deterministic validation policy:
+ * - Validates every supplied point BEFORE returning any result (including empty or short datasets of 1 or 2 points).
+ * - Validates strict ISO 8601 UTC timestamp syntax via regex and Date parsing.
+ * - Enforces Number.isFinite() on timeMs and heightMeters.
+ * - Verifies exact millisecond synchronization between timestampUtc and timeMs.
+ * - Detects duplicate timestamps by normalized millisecond timestamp (timeMs), catching equivalent ISO string variants.
+ * - Sorting Policy: Points may be provided in arbitrary order; the function explicitly and deterministically
+ *   sorts points in ascending chronological order ([...points].sort((a, b) => a.timeMs - b.timeMs)) prior to extrema evaluation.
+ * - Valid short-series behavior: Valid datasets with fewer than 3 points return [] only after all points pass validation.
+ * Throws explicit descriptive errors on any invalid point rather than silently corrupting results.
+ */
 export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPoint[] {
   if (!Array.isArray(points)) {
     throw new Error('Points must be an array');
   }
 
-  if (points.length < 3) {
-    return [];
-  }
+  const seenTimestampsMs = new Set<number>();
 
-  const seenTimestamps = new Set<string>();
-
-  // Explicit deterministic validation of every single point
+  // Explicit deterministic validation of every single point before checking dataset length
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
     if (!p || typeof p !== 'object') {
       throw new Error(`Invalid water level point at index ${i}`);
     }
 
-    if (typeof p.timestampUtc !== 'string' || !p.timestampUtc.endsWith('Z')) {
-      throw new Error(`Invalid ISO 8601 UTC timestamp at index ${i}: '${p.timestampUtc}'`);
+    if (!isValidCalendarUtcIso(p.timestampUtc)) {
+      throw new Error(`Invalid ISO 8601 UTC timestamp at index ${i}: '${p?.timestampUtc}'`);
     }
 
     const parsedDate = new Date(p.timestampUtc);
@@ -218,13 +281,18 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
       throw new Error(`Non-finite heightMeters at index ${i}: ${p.heightMeters}`);
     }
 
-    if (seenTimestamps.has(p.timestampUtc)) {
-      throw new Error(`Duplicate timestamp detected in point series at index ${i}: '${p.timestampUtc}'`);
+    if (seenTimestampsMs.has(p.timeMs)) {
+      throw new Error(`Duplicate timestamp detected in point series at index ${i}: timeMs=${p.timeMs} ('${p.timestampUtc}')`);
     }
-    seenTimestamps.add(p.timestampUtc);
+    seenTimestampsMs.add(p.timeMs);
   }
 
-  // Ensure chronological order
+  // Preserve valid short-series behavior: return empty extrema array only after full validation
+  if (points.length < 3) {
+    return [];
+  }
+
+  // Ensure chronological order by sorting points deterministically
   const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
   const extrema: ExtremaPoint[] = [];
 

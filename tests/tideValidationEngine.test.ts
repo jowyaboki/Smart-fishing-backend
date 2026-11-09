@@ -10,6 +10,7 @@ import {
   calculateStatisticalMetrics,
   detectLocalExtrema,
   DiscreteWaterLevelPoint,
+  isValidCalendarUtcIso,
 } from '../src/services/hydrographic/validationStatistics';
 import {
   DatumVerificationBenchmarkProof,
@@ -214,6 +215,176 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
           { timestampUtc: '2026-11-08T02:00:00Z', timeMs: new Date('2026-11-08T02:00:00Z').getTime(), heightMeters: 1.0 },
         ])
       ).toThrow('Duplicate timestamp detected');
+
+      // Reject invalid one-point and two-point datasets before returning []
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: NaN, heightMeters: 1.0 },
+        ])
+      ).toThrow('Non-finite timeMs');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: Infinity },
+        ])
+      ).toThrow('Non-finite heightMeters');
+
+      // Equivalent timestamp strings representing the exact same millisecond detected as duplicates
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 1794096000000, heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T00:00:00.000Z', timeMs: 1794096000000, heightMeters: 1.1 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 1794099600000, heightMeters: 1.5 },
+        ])
+      ).toThrow('Duplicate timestamp detected');
+
+      // Non-ISO timestamp strings ending in Z are strictly rejected
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: 'fooZ', timeMs: new Date('fooZ').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08Z', timeMs: new Date('2026-11-08Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // PR #20: Strict calendar date validation rejects impossible calendar dates
+      // 1. Impossible day in month (e.g. Feb 31)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-02-31T00:00:00Z', timeMs: new Date('2026-02-31T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 2. Impossible month (e.g. Month 13)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-13-01T00:00:00Z', timeMs: new Date('2026-13-01T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 3. Impossible hour (e.g. Hour 25)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T25:00:00Z', timeMs: new Date('2026-01-01T25:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 4. Impossible minute (e.g. Minute 60)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T00:60:00Z', timeMs: new Date('2026-01-01T00:60:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 5. Impossible second (e.g. Second 60)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T00:00:60Z', timeMs: new Date('2026-01-01T00:00:60Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 6. Impossible Feb 29 in a non-leap year (2026)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-02-29T12:00:00Z', timeMs: new Date('2026-02-29T12:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 7. Year 0000 and years 0001-0099 supported without Date.UTC(0..99) distortion
+      const y0Iso = '0000-01-01T00:00:00Z';
+      const y0Date = new Date(0);
+      y0Date.setUTCFullYear(0, 0, 1);
+      y0Date.setUTCHours(0, 0, 0, 0);
+      expect(isValidCalendarUtcIso(y0Iso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: y0Iso, timeMs: y0Date.getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      const y50Iso = '0050-06-15T12:00:00Z';
+      const y50Date = new Date(0);
+      y50Date.setUTCFullYear(50, 5, 15);
+      y50Date.setUTCHours(12, 0, 0, 0);
+      expect(isValidCalendarUtcIso(y50Iso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: y50Iso, timeMs: y50Date.getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 8. Normal modern date
+      const modernIso = '2026-11-08T14:30:00Z';
+      const modernMs = new Date(modernIso).getTime();
+      expect(isValidCalendarUtcIso(modernIso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: modernIso, timeMs: modernMs, heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 9. Valid leap year date (2024-02-29)
+      const leapIso = '2024-02-29T12:00:00Z';
+      const leapMs = new Date(leapIso).getTime();
+      expect(isValidCalendarUtcIso(leapIso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: leapIso, timeMs: leapMs, heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // 10. Fractional seconds with 1, 2, and 3 digits
+      const frac1 = '2026-11-08T00:00:00.1Z';
+      const frac2 = '2026-11-08T00:00:00.12Z';
+      const frac3 = '2026-11-08T00:00:00.123Z';
+      expect(isValidCalendarUtcIso(frac1)).toBe(true);
+      expect(isValidCalendarUtcIso(frac2)).toBe(true);
+      expect(isValidCalendarUtcIso(frac3)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac1, timeMs: new Date(frac1).getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac2, timeMs: new Date(frac2).getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: frac3, timeMs: new Date(frac3).getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+
+      // Empty and valid short datasets return [] after successful validation
+      expect(detectLocalExtrema([])).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: '2026-11-08T00:00:00Z', timeMs: new Date('2026-11-08T00:00:00Z').getTime(), heightMeters: 1.0 },
+          { timestampUtc: '2026-11-08T01:00:00Z', timeMs: new Date('2026-11-08T01:00:00Z').getTime(), heightMeters: 1.5 },
+        ])
+      ).toEqual([]);
+
+      // Unordered timestamps follow intentional chronological sorting policy
+      const unorderedPoints: DiscreteWaterLevelPoint[] = [
+        { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 1794103200000, heightMeters: 1.0 },
+        { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 1794096000000, heightMeters: 1.2 },
+        { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 1794099600000, heightMeters: 3.0 },
+      ];
+      const detectedExtrema = detectLocalExtrema(unorderedPoints);
+      expect(detectedExtrema).toHaveLength(1);
+      expect(detectedExtrema[0].type).toBe('High');
+      expect(detectedExtrema[0].timestampUtc).toBe('2026-11-08T01:00:00Z');
 
       // 2. Peak metrics rejects invalid matching window (NaN, negative, or overflowing)
       const t0 = new Date('2026-11-08T00:00:00Z').getTime();
@@ -1260,6 +1431,133 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
           predictionResolutionMinutes: NaN,
         })
       ).rejects.toThrow();
+
+      // 3. Permitted boundary workload (within 50,000 points limit) executes properly
+      // A span of 100 hours with 10 min resolution = 601 prediction points <= 50,000
+      const baseMs = new Date('2026-11-08T00:00:00Z').getTime();
+      const validPoints: HydrographicObservation[] = [
+        {
+          id: 'obs-workload-ok-1',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-08T00:00:00Z',
+          waterLevelMeters: 2.0,
+          verticalDatum: 'ZH',
+          rawValue: 2.0,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-08T00:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        {
+          id: 'obs-workload-ok-2',
+          stationId: 'casablanca-port',
+          timestampUtc: '2026-11-12T04:00:00Z', // 100 hours later
+          waterLevelMeters: 2.5,
+          verticalDatum: 'ZH',
+          rawValue: 2.5,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: '2026-11-12T04:05:00Z',
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ];
+      repo.saveObservationsBatch(validPoints);
+
+      const permittedRun = await validationEngine.validateStation({
+        stationId: 'casablanca-port',
+        startDateUtc: '2026-11-08T00:00:00Z',
+        endDateUtc: '2026-11-12T04:00:00Z',
+        predictionResolutionMinutes: 10,
+      });
+      expect(permittedRun.id).toBeDefined();
+
+      // 4. Exceeding workload (> 50,000 points) is rejected BEFORE provider calls begin
+      // Spy on provider to verify 0 calls during independent peak generation when limit is breached
+      const mockProvider: any = {
+        providerId: 'spy-provider',
+        getTidePrediction: vi.fn().mockResolvedValue({
+          currentTide: { heightMeters: 2.1, type: 'Rising' },
+        }),
+      };
+      const engineWithSpy = new EmpiricalValidationEngine(repo, mockProvider);
+
+      // Save a valid observation in 2026 so validPairs.length > 0 triggers peak detection
+      const obsTime1 = '2026-01-01T00:00:00Z';
+      const obsTime2 = '2026-01-15T00:00:00Z';
+      repo.saveObservationsBatch([
+        {
+          id: 'obs-spy-workload-1',
+          stationId: 'casablanca-port',
+          timestampUtc: obsTime1,
+          waterLevelMeters: 2.1,
+          verticalDatum: 'ZH',
+          rawValue: 2.1,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: obsTime1,
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+        {
+          id: 'obs-spy-workload-2',
+          stationId: 'casablanca-port',
+          timestampUtc: obsTime2,
+          waterLevelMeters: 2.2,
+          verticalDatum: 'ZH',
+          rawValue: 2.2,
+          rawUnit: 'm',
+          qualityTier: 'observed',
+          dataStatus: 'observation',
+          provenance: {
+            provider: 'ANP',
+            retrievedAt: obsTime2,
+            quality: 'observed',
+            status: 'observation',
+            coordinates: { latitude: 33.6, longitude: -7.6 },
+            units: { waterLevel: 'm', rawUnit: 'm' },
+            isSimulatedFallback: false,
+          },
+        },
+      ]);
+
+      // 50,001 points: 50,000 minutes = ~34.72 days with 1-min resolution
+      const startMs = new Date('2026-01-01T00:00:00Z').getTime();
+      const endMsExceeded = new Date(startMs + 50001 * 60 * 1000).toISOString();
+
+      await expect(
+        engineWithSpy.validateStation({
+          stationId: 'casablanca-port',
+          startDateUtc: '2026-01-01T00:00:00Z',
+          endDateUtc: endMsExceeded,
+          predictionResolutionMinutes: 1, // (50001 * 60000) / 60000 + 1 = 50,002 > 50,000
+        })
+      ).rejects.toThrow('Excessive prediction workload');
+
+      // Verify that provider was only called for the 2 observations alignment, never for 50,000 peak points
+      expect(mockProvider.getTidePrediction).toHaveBeenCalledTimes(2);
     });
   });
 
