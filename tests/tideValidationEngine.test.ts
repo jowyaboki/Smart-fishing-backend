@@ -10,6 +10,7 @@ import {
   calculateStatisticalMetrics,
   detectLocalExtrema,
   DiscreteWaterLevelPoint,
+  isValidCalendarUtcIso,
 } from '../src/services/hydrographic/validationStatistics';
 import {
   DatumVerificationBenchmarkProof,
@@ -250,6 +251,52 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
           { timestampUtc: '2026-11-08Z', timeMs: new Date('2026-11-08Z').getTime(), heightMeters: 1.0 },
         ])
       ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // PR #20: Strict calendar date validation rejects impossible calendar dates
+      // 1. Impossible day in month (e.g. Feb 31)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-02-31T00:00:00Z', timeMs: new Date('2026-02-31T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 2. Impossible month (e.g. Month 13)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-13-01T00:00:00Z', timeMs: new Date('2026-13-01T00:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 3. Impossible hour (e.g. Hour 25)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T25:00:00Z', timeMs: new Date('2026-01-01T25:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 4. Impossible minute (e.g. Minute 60)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-01-01T00:60:00Z', timeMs: new Date('2026-01-01T00:60:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 5. Impossible Feb 29 in a non-leap year (2026)
+      expect(() =>
+        detectLocalExtrema([
+          { timestampUtc: '2026-02-29T12:00:00Z', timeMs: new Date('2026-02-29T12:00:00Z').getTime(), heightMeters: 1.0 },
+        ])
+      ).toThrow('Invalid ISO 8601 UTC timestamp');
+
+      // 6. Valid leap year date (2024-02-29) and fractional-second precision are accepted
+      const leapIso = '2024-02-29T12:30:45.123Z';
+      const leapMs = new Date(leapIso).getTime();
+      expect(isValidCalendarUtcIso(leapIso)).toBe(true);
+      expect(
+        detectLocalExtrema([
+          { timestampUtc: leapIso, timeMs: leapMs, heightMeters: 1.0 },
+        ])
+      ).toEqual([]);
 
       // Empty and valid short datasets return [] after successful validation
       expect(detectLocalExtrema([])).toEqual([]);

@@ -176,7 +176,45 @@ export interface ExtremaPoint {
  * - Detects duplicate timestamps.
  * Throws explicit descriptive errors on any invalid point rather than silently corrupting results.
  */
-const ISO_8601_UTC_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+const ISO_8601_UTC_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.(\d{1,3}))?Z$/;
+
+/**
+ * Validates whether an ISO 8601 UTC string is not only syntactically valid,
+ * but represents a real calendar date and valid time components (including leap year rules).
+ */
+export function isValidCalendarUtcIso(isoString: string): boolean {
+  if (typeof isoString !== 'string') return false;
+  const match = ISO_8601_UTC_REGEX.exec(isoString);
+  if (!match) return false;
+
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  const hour = parseInt(match[4], 10);
+  const minute = parseInt(match[5], 10);
+  const second = parseInt(match[6], 10);
+  const ms = match[8] ? parseInt(match[8].padEnd(3, '0'), 10) : 0;
+
+  if (month < 1 || month > 12) return false;
+  if (hour < 0 || hour > 23) return false;
+  if (minute < 0 || minute > 59) return false;
+  if (second < 0 || second > 59) return false;
+  if (ms < 0 || ms > 999) return false;
+
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second ||
+    date.getUTCMilliseconds() !== ms
+  ) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Detects local extrema (high and low peaks) from discrete water level time-series.
@@ -205,11 +243,7 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
       throw new Error(`Invalid water level point at index ${i}`);
     }
 
-    if (
-      typeof p.timestampUtc !== 'string' ||
-      !p.timestampUtc.endsWith('Z') ||
-      !ISO_8601_UTC_REGEX.test(p.timestampUtc)
-    ) {
+    if (!isValidCalendarUtcIso(p.timestampUtc)) {
       throw new Error(`Invalid ISO 8601 UTC timestamp at index ${i}: '${p?.timestampUtc}'`);
     }
 
