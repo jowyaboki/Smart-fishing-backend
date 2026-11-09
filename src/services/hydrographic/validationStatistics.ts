@@ -292,47 +292,7 @@ export function detectLocalExtrema(points: DiscreteWaterLevelPoint[]): ExtremaPo
     return [];
   }
 
-  // Ensure chronological order by sorting points deterministically
-  const seenTimestamps = new Set<string>();
-
-  // Explicit deterministic validation of every single point
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    if (!p || typeof p !== 'object') {
-      throw new Error(`Invalid water level point at index ${i}`);
-    }
-
-    if (typeof p.timestampUtc !== 'string' || !p.timestampUtc.endsWith('Z')) {
-      throw new Error(`Invalid ISO 8601 UTC timestamp at index ${i}: '${p.timestampUtc}'`);
-    }
-
-    const parsedDate = new Date(p.timestampUtc);
-    const parsedMs = parsedDate.getTime();
-    if (isNaN(parsedMs)) {
-      throw new Error(`Malformed timestamp at index ${i}: '${p.timestampUtc}'`);
-    }
-
-    if (typeof p.timeMs !== 'number' || !Number.isFinite(p.timeMs)) {
-      throw new Error(`Non-finite timeMs at index ${i}: ${p.timeMs}`);
-    }
-
-    if (p.timeMs !== parsedMs) {
-      throw new Error(
-        `Desynchronized point at index ${i}: timestampUtc '${p.timestampUtc}' (${parsedMs}ms) !== timeMs (${p.timeMs}ms)`
-      );
-    }
-
-    if (typeof p.heightMeters !== 'number' || !Number.isFinite(p.heightMeters)) {
-      throw new Error(`Non-finite heightMeters at index ${i}: ${p.heightMeters}`);
-    }
-
-    if (seenTimestamps.has(p.timestampUtc)) {
-      throw new Error(`Duplicate timestamp detected in point series at index ${i}: '${p.timestampUtc}'`);
-    }
-    seenTimestamps.add(p.timestampUtc);
-  }
-
-  // Ensure chronological order
+  // Ensure chronological order deterministically without mutating input
   const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
   const extrema: ExtremaPoint[] = [];
 

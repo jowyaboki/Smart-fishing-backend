@@ -375,16 +375,19 @@ describe('Milestone P2.4: Empirical Tide Validation Engine Suite', () => {
         ])
       ).toEqual([]);
 
-      // Unordered timestamps follow intentional chronological sorting policy
+      // Unordered timestamps follow intentional chronological sorting policy without mutating input
       const unorderedPoints: DiscreteWaterLevelPoint[] = [
         { timestampUtc: '2026-11-08T02:00:00Z', timeMs: 1794103200000, heightMeters: 1.0 },
         { timestampUtc: '2026-11-08T00:00:00Z', timeMs: 1794096000000, heightMeters: 1.2 },
         { timestampUtc: '2026-11-08T01:00:00Z', timeMs: 1794099600000, heightMeters: 3.0 },
       ];
+      const unorderedPointsClone = JSON.parse(JSON.stringify(unorderedPoints));
       const detectedExtrema = detectLocalExtrema(unorderedPoints);
       expect(detectedExtrema).toHaveLength(1);
       expect(detectedExtrema[0].type).toBe('High');
       expect(detectedExtrema[0].timestampUtc).toBe('2026-11-08T01:00:00Z');
+      // Ensure input array and order were not mutated
+      expect(unorderedPoints).toEqual(unorderedPointsClone);
 
       // 2. Peak metrics rejects invalid matching window (NaN, negative, or overflowing)
       const t0 = new Date('2026-11-08T00:00:00Z').getTime();
